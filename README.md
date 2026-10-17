@@ -2,10 +2,9 @@
 
 **Evolutionary search for Triton kernels with an LLM: compile-checked without a GPU, timed on one when there is one.**
 
-![mini-kerngen loop: each generation one LLM call turns the parent kernel into a candidate. Candidates pass a Python syntax check and an ahead-of-time Triton compile, then two planned stages drawn in purple: an anti-gaming sanitizer and a model + analytical heuristic evaluator (static score today; CPU deviation, tcgen05 numerics and a timed Petri net planned). Every Nth generation the survivors run on a real GPU for correctness and time. The best becomes the next parent, and what the checks found becomes instructions in the next prompt, with KernelWiki pages added once the search stalls (planned)](assets/demo.gif)
+![mini-kerngen loop, drawn top to bottom. The prompt is built from the parent kernel, the feedback memory and, once the search stalls, a KernelWiki technique page. Each generation one LLM call (DeepSeek or Nemotron on Crusoe) produces a candidate. Candidates then pass down through rows: Python syntax, ahead-of-time Triton compile, the anti-gaming sanitizer, the model + analytical heuristic evaluator, and every Nth generation a real GPU run. The best loops back up to become the next parent, and what the checks found becomes instructions in the next prompt. A final frame shows the stagnation counter selecting a KernelWiki page after three generations without improvement. Planned parts (sanitizer, evaluator beyond the static score, KernelWiki, stagnation counter) are drawn in purple](assets/demo.gif)
 
-mini-kerngen builds on [MiniAVO-Liquid](https://github.com/whatdhack/mini-avo-liquid). The loop described below
-works today, with [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html) as the
+The evolution loop described below works today, with [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html) as the
 default model provider. Its default model is `deepseek-ai/Deepseek-V4-Flash`; an
 [NVIDIA Nemotron](https://developer.nvidia.com/nemotron) model such as `nvidia/Nemotron-3.5-Lightning-30B-A3B` can be
 selected with `--model`. Three components from the [plan](docs/PLAN.md) are being added, each drawn in purple in the
@@ -30,7 +29,7 @@ animation and each built on published work (see [References](#references)):
 
 | Component | State |
 |---|---|
-| Evolution loop: one LLM call per generation, GPU-less Triton compile, static score, optional GPU timing, feedback memory | Working (from MiniAVO-Liquid) |
+| Evolution loop: one LLM call per generation, GPU-less Triton compile, static score, optional GPU timing, feedback memory | Working |
 | Crusoe Intelligence Foundry as the default provider: `deepseek-ai/Deepseek-V4-Flash` by default, NVIDIA Nemotron with `--model` | Working; model IDs checked against Crusoe's live catalog, tests against a fake client, no generations run yet |
 | Anti-Gaming Sanitizer (after AKO4X) | Planned (Phase 1) |
 | Model + Analytical Heuristic Evaluator, part 1: CPU correctness through the Triton interpreter | Planned (Phase 1) |
@@ -197,12 +196,10 @@ The fastest run per kernel name is kept, this run's result supersedes a remember
 same name, and a store never reads back its own run. The file defaults to
 `.kerngen_memory.jsonl` next to the script (`FEEDBACK_FILE` overrides it) and is gitignored.
 
-### Baseline: what MiniAVO-Liquid produced
+### Baseline
 
-mini-kerngen has no results of its own yet. These are MiniAVO-Liquid's, and they are the numbers to beat.
-
-They were measured on an NVIDIA GB10 (DGX Spark, sm_121) with `glm-5.3` on Vultr Serverless Inference. "Best found"
-is the fastest kernel the search produced that passed the GPU harness at the time.
+Measured on an NVIDIA GB10 (DGX Spark, sm_121) with `glm-5.3` using MiniAVO. "Best found" is the fastest kernel the
+search produced that passed the GPU harness at the time.
 
 | Problem | Seed | Best found | Library reference |
 |---|---|---|---|
