@@ -69,14 +69,15 @@ def test_crusoe_without_key_names_the_variable(monkeypatch):
 
 
 def test_crusoe_model_default_and_override(monkeypatch):
-    assert rev.provider_model(CRUSOE) == "deepseek-ai/DeepSeek-V4-Flash"
-    monkeypatch.setenv("CRUSOE_MODEL", "deepseek-ai/DeepSeek-V4-Pro")
-    assert rev.provider_model(CRUSOE) == "deepseek-ai/DeepSeek-V4-Pro"
+    # IDs as Crusoe's /v1/models lists them, which is not always how its docs spell them
+    assert rev.provider_model(CRUSOE) == "deepseek-ai/Deepseek-V4-Flash"
+    monkeypatch.setenv("CRUSOE_MODEL", "nvidia/Nemotron-3.5-Lightning-30B-A3B")
+    assert rev.provider_model(CRUSOE) == "nvidia/Nemotron-3.5-Lightning-30B-A3B"
 
 
 def test_request_shape(fake):
     calls = fake(completion('{"code": "x"}'))
-    assert rev.call_mutation_agent("prompt", "deepseek-ai/DeepSeek-V4-Flash", CRUSOE) == {"code": "x"}
+    assert rev.call_mutation_agent("prompt", "deepseek-ai/Deepseek-V4-Flash", CRUSOE) == {"code": "x"}
     (request,) = calls.requests
     assert [m["role"] for m in request["messages"]] == ["system", "user"]
     assert request["max_tokens"] == 32768

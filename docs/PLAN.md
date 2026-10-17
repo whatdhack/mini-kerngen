@@ -531,7 +531,7 @@ through `--provider`.
 |---|---|
 | Base URL | `https://api.inference.crusoecloud.com/v1`, per [Crusoe's serverless inference docs](https://docs.crusoecloud.com/serverless-inference/index.html). `managed-inference-api-proxy.crusoecloud.com` is the older host |
 | Key | `CRUSOE_API_KEY` (console: Admin → Security → Intelligence API keys) |
-| Model | `deepseek-ai/DeepSeek-V4-Flash`; override with `CRUSOE_MODEL` or `--model` |
+| Model | `deepseek-ai/Deepseek-V4-Flash`; override with `CRUSOE_MODEL` or `--model`, e.g. NVIDIA Nemotron `nvidia/Nemotron-3.5-Lightning-30B-A3B` or `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B` |
 | Max tokens | 32768 |
 | Catalog | `--list-models crusoe` (requires the key; without it the endpoint returns 401) |
 
@@ -548,11 +548,15 @@ report that DeepSeek V4, with thinking on, can answer a JSON-mode request with e
 
 The only extra call is that first retry.
 
-**Still to verify with the first key:**
+**Model IDs (checked against the live catalog, 2026-10-17).** `GET /v1/models` lists IDs that differ from Crusoe's
+docs page, and the catalog's spelling is the one to use:
 
-- `--list-models crusoe` confirms the exact model ID casing (the docs write `DeepSeek-V4-Flash`, the console URL
-  `Deepseek-V4-Flash`);
-- a one-generation run shows whether JSON mode is honoured and how many reasoning tokens a mutation costs.
+- `deepseek-ai/Deepseek-V4-Flash`, not `DeepSeek-V4-Flash`;
+- `nvidia/Nemotron-3.5-Lightning-30B-A3B`, not `nvidia/nemotron-3.5-lightning-30b-a3b`;
+- `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B`, not `nvidia/Nemotron-3-Super-120B-A12B`.
+
+**Still to verify:** a one-generation run with DeepSeek and one with Nemotron, to show whether JSON mode is honoured
+and how many reasoning tokens a mutation costs.
 
 ## 7. Phases
 
@@ -621,5 +625,5 @@ Order:
 3. Is there a written rubric for "Shared Brain" and "Version N+1"? I couldn't find the track definitions online. This
    plan maps them to §6.2 and §6.6.
 
-Decided: the repo is a clone that keeps mini-avo-liquid's history. The LLM is Crusoe Intelligence Foundry
-`deepseek-ai/DeepSeek-V4-Flash`, with one call per generation.
+Decided: the repo is a clone that keeps mini-avo-liquid's history. The LLM is Crusoe Intelligence Foundry, with one
+call per generation: `deepseek-ai/Deepseek-V4-Flash` by default, and NVIDIA Nemotron as the alternative.

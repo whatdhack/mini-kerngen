@@ -43,7 +43,7 @@ F_TITLE, F_H, F_H2, F_B, F_S = font(26, True), font(16, True), font(13, True), f
 # Pipeline columns: (x center, title lines, subtitle lines, planned)
 STAGES = [
     (95, ["Parent"], ["seed: naive or", "web (Nimble)"], False),
-    (222, ["LLM agent"], ["1 call / generation", "Crusoe by default"], False),
+    (222, ["LLM agent"], ["1 call / generation", "on Crusoe: DeepSeek", "or Nemotron"], False),
     (330, ["1. Syntax"], ["ast.parse"], False),
     (432, ["2. Compile"], ["Triton, no GPU", "sm_80 … sm_121"], False),
     (548, ["3. Anti-Gaming", "Sanitizer"], ["after AKO4X:", "varying inputs,", "library calls"], True),
@@ -239,7 +239,7 @@ def frames():
     img, d = base("", "No GPU needed to search; one on the machine turns the proxy into a measurement",
                   stages=False)
     lines = [("Problems", "matmul_v2 · vectorsum_v2 · cholesky · trimul_alphafold3", False),
-             ("Model", "deepseek-ai/DeepSeek-V4-Flash on Crusoe, one call per generation", False),
+             ("Model", "Deepseek-V4-Flash or NVIDIA Nemotron on Crusoe; one call per generation", False),
              ("Checks", "Python syntax → Triton compile (sm_80 … sm_121) → launch limits", False),
              ("Sanitizer", "after AKO4X: varying inputs, poison cells, library-call ban", True),
              ("Evaluator", "static score today; CPU deviation, tcgen05 numerics, Petri net", True),

@@ -246,8 +246,10 @@ PROVIDERS: Dict[str, ProviderSpec] = {
         label="Crusoe Intelligence Foundry",
         base_url=CRUSOE_BASE_URL,
         key_envs=("CRUSOE_API_KEY",),
-        # Catalog: GET https://api.inference.crusoecloud.com/v1/models (also `--list-models crusoe`)
-        default_model="deepseek-ai/DeepSeek-V4-Flash",
+        # Catalog: GET https://api.inference.crusoecloud.com/v1/models (also `--list-models crusoe`). Use the
+        # IDs exactly as it lists them; they differ from Crusoe's docs page ("Deepseek", not "DeepSeek").
+        # NVIDIA Nemotron is served too, e.g. nvidia/Nemotron-3.5-Lightning-30B-A3B (CRUSOE_MODEL or --model)
+        default_model="deepseek-ai/Deepseek-V4-Flash",
         model_envs=("CRUSOE_MODEL",),
         # DeepSeek V4 thinks before it answers and the reasoning counts toward max_tokens. Crusoe
         # documents no thinking-budget field, so none is sent; leave room for the reasoning instead

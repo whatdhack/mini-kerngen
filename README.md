@@ -6,7 +6,9 @@
 
 mini-kerngen builds on [MiniAVO-Liquid](https://github.com/whatdhack/mini-avo-liquid). The loop described below
 works today, with [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html) as the
-default model provider. Three components from the [plan](docs/PLAN.md) are being added, each drawn in purple in the
+default model provider. Its default model is `deepseek-ai/Deepseek-V4-Flash`; an
+[NVIDIA Nemotron](https://developer.nvidia.com/nemotron) model such as `nvidia/Nemotron-3.5-Lightning-30B-A3B` can be
+selected with `--model`. Three components from the [plan](docs/PLAN.md) are being added, each drawn in purple in the
 animation and each built on published work (see [References](#references)):
 
 - **Anti-Gaming Sanitizer.** Static and dynamic checks against reward hacking, after
@@ -29,7 +31,7 @@ animation and each built on published work (see [References](#references)):
 | Component | State |
 |---|---|
 | Evolution loop: one LLM call per generation, GPU-less Triton compile, static score, optional GPU timing, feedback memory | Working (from MiniAVO-Liquid) |
-| Crusoe Intelligence Foundry with `deepseek-ai/DeepSeek-V4-Flash` as the default provider | Working; covered by tests against a fake client, no live runs yet |
+| Crusoe Intelligence Foundry as the default provider: `deepseek-ai/Deepseek-V4-Flash` by default, NVIDIA Nemotron with `--model` | Working; model IDs checked against Crusoe's live catalog, tests against a fake client, no generations run yet |
 | Anti-Gaming Sanitizer (after AKO4X) | Planned (Phase 1) |
 | Model + Analytical Heuristic Evaluator, part 1: CPU correctness through the Triton interpreter | Planned (Phase 1) |
 | Stagnation-driven exploit/explore; per-run `ITERATIONS.md` trajectory | Planned (Phase 2) |
@@ -52,9 +54,10 @@ mini-kerngen runs an evolutionary loop over GPU kernels for
 1. **Seed.** Start from a naive kernel in `seeds/naive/`, or search the web for a better one
    with [Nimble](https://docs.nimbleway.com) (`--web-seed`).
 2. **Mutate.** An LLM rewrites the current parent kernel in one call per generation, following an optimization
-   strategy and an optional steering prompt. The model is `deepseek-ai/DeepSeek-V4-Flash` on Crusoe Intelligence
-   Foundry by default. Alternatives are `liquid/lfm-2.5-2.6b:free` on OpenRouter (`--provider openrouter`) and
-   `glm-5.3` on Vultr Serverless Inference (`--provider vultr`).
+   strategy and an optional steering prompt. The model is `deepseek-ai/Deepseek-V4-Flash` on Crusoe Intelligence
+   Foundry by default. Crusoe also serves NVIDIA Nemotron: `--model nvidia/Nemotron-3.5-Lightning-30B-A3B`, or
+   `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B` for a larger model. Other providers are `liquid/lfm-2.5-2.6b:free` on
+   OpenRouter (`--provider openrouter`) and `glm-5.3` on Vultr Serverless Inference (`--provider vultr`).
 3. **Check.** Each candidate must parse as Python and compile as Triton for the target GPU.
 4. **Score.** Candidates that compile get a static performance score. Every Nth generation,
    the candidate is also run on a real GPU (`--gpu-bench-every N`): checked against a torch
@@ -287,7 +290,7 @@ cp .env.example .env
 | Variable | Needed for |
 |---|---|
 | `CRUSOE_API_KEY` | Mutations via Crusoe Intelligence Foundry, the default provider. Create it in the Crusoe console under Admin → Security → Intelligence API keys. |
-| `CRUSOE_MODEL` | Optional Crusoe override (default: `deepseek-ai/DeepSeek-V4-Flash`, with `LLM_MAX_TOKENS` defaulting to `32768`) |
+| `CRUSOE_MODEL` | Optional Crusoe override (default: `deepseek-ai/Deepseek-V4-Flash`, with `LLM_MAX_TOKENS` defaulting to `32768`), e.g. `nvidia/Nemotron-3.5-Lightning-30B-A3B` for NVIDIA Nemotron. Use IDs exactly as `--list-models crusoe` prints them |
 | `OPENROUTER_API_KEY` | Mutations via OpenRouter (Liquid models). |
 | `VULTR_SERVERLESS_INFERENCE_API_KEY` | Mutations via Vultr Serverless Inference. `VULTR_INFERENCE_API_KEY` and `VULTR_API_KEY` also work. |
 | `NIMBLE_API_KEY` | `--web-seed` only |
@@ -332,6 +335,7 @@ python run_evolution.py --problem vectorsum_v2 --hardware gb10 --gpu-bench-every
 # Steer the mutations, or pick another model
 python run_evolution.py --problem matmul_v2 --steer "Use TMA descriptors and warp specialization"
 python run_evolution.py --model deepseek-ai/DeepSeek-V4-Pro
+python run_evolution.py --model nvidia/Nemotron-3.5-Lightning-30B-A3B     # NVIDIA Nemotron on Crusoe
 
 # Mutate with another provider instead of Crusoe
 python run_evolution.py --problem matmul_v2 --provider openrouter --model liquid/lfm-2.5-1.2b-instruct:free
@@ -361,7 +365,7 @@ compile check targets the same architecture it will run on.
 | `--web-seed` / `--refresh-seed` | start from a Nimble-found kernel / ignore the cache | off |
 | `--steer` | free-text guidance added to the mutation prompt | none |
 | `--provider` | `crusoe`, `openrouter`, `vultr` | whichever API key is set (Crusoe first) |
-| `--model` | any model ID the provider serves | provider default: `deepseek-ai/DeepSeek-V4-Flash`, `liquid/lfm-2.5-2.6b:free`, `glm-5.3` |
+| `--model` | any model ID the provider serves, e.g. `nvidia/Nemotron-3.5-Lightning-30B-A3B` on Crusoe | provider default: `deepseek-ai/Deepseek-V4-Flash`, `liquid/lfm-2.5-2.6b:free`, `glm-5.3` |
 | `--list-models` | `crusoe`, `openrouter`, `vultr` | prints the catalog and exits |
 | `--gpu-bench-every` | run generation N, 2N, … on a real GPU (`0` disables); env `GPU_BENCH_EVERY` | `0` |
 | `--gpu-bench-timeout` | seconds one GPU benchmark subprocess may take | `300` |
@@ -447,8 +451,13 @@ pytest     # CPU only; no API keys or network needed
 - [KernelWiki](https://github.com/mit-han-lab/KernelWiki) (MIT HAN Lab): a Blackwell and Hopper kernel optimization
   knowledge base, pinned as a submodule.
 
-**Infrastructure**
+**Models and inference**
 
 - [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html): the default
-  inference provider.
+  inference provider, serving `deepseek-ai/Deepseek-V4-Flash` (the default model) and NVIDIA Nemotron.
+- [NVIDIA Nemotron](https://developer.nvidia.com/nemotron): open models available on Crusoe as alternative mutation
+  models, e.g. `nvidia/Nemotron-3.5-Lightning-30B-A3B` and `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B`.
+
+**Problems**
+
 - [GPU MODE](https://www.gpumode.com): the problem definitions.
