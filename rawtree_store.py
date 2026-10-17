@@ -7,7 +7,7 @@ are loaded back with SQL, so a new run starts with the mistakes previous runs al
 Configuration (environment or .env):
     RAWTREE_API_KEY         API key (rt_...), read_write permission
     RAWTREE_DATABASE        optional; defaults to the key's default database
-    RAWTREE_FEEDBACK_TABLE  optional; defaults to "miniavo_feedback"
+    RAWTREE_FEEDBACK_TABLE  optional; defaults to "kerngen_feedback"
     RAWTREE_API_URL         optional; defaults to https://api.rawtree.com
 
 RawTree failures never stop a run: they are reported once and the run continues with in-memory feedback.
@@ -22,7 +22,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 DEFAULT_API_URL = "https://api.rawtree.com"
-DEFAULT_TABLE = "miniavo_feedback"
+DEFAULT_TABLE = "kerngen_feedback"
 IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
 

@@ -10,7 +10,7 @@ Real measurements are the reason this exists: a static score is reproducible fro
 by having run it, and is worth carrying into the next run.
 
 Configuration (environment or .env):
-    FEEDBACK_FILE   optional; defaults to .miniavo_memory.jsonl next to this file
+    FEEDBACK_FILE   optional; defaults to .kerngen_memory.jsonl next to this file
 
 File errors never stop a run: they are reported once and the run continues in memory.
 """
@@ -20,7 +20,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_FILENAME = ".miniavo_memory.jsonl"
+DEFAULT_FILENAME = ".kerngen_memory.jsonl"
 MAX_READ_BYTES = 8 * 1024 * 1024  # a run appends a few KB; cap the read so the file can never stall a run
 
 

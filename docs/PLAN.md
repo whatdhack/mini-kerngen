@@ -614,7 +614,9 @@ Order:
 ## 10. Open questions
 
 1. Can the measured GB10 lineages (`evolution_result_*.json` and `.miniavo_memory.jsonl` from the DGX Spark) be
-   copied here for calibration and as Phase 2 fixtures? This machine has none.
+   copied here for calibration and as Phase 2 fixtures? This machine has none. mini-kerngen's memory file is
+   `.kerngen_memory.jsonl`, so rename the old file or point `FEEDBACK_FILE` at it. The RawTree table is now
+   `kerngen_feedback`; `RAWTREE_FEEDBACK_TABLE=miniavo_feedback` reads the old one.
 2. Is there B200 access for Phase 7 (Vultr cloud GPU, Modal)?
 3. Is there a written rubric for "Shared Brain" and "Version N+1"? I couldn't find the track definitions online. This
    plan maps them to §6.2 and §6.6.

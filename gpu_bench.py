@@ -31,7 +31,7 @@ from typing import Any, Dict, Optional
 DEFAULT_TIMEOUT_S = 300
 DEFAULT_WARMUP_MS = 25
 DEFAULT_REP_MS = 100
-BENCH_MARKER = "__MINIAVO_BENCH__"
+BENCH_MARKER = "__KERNGEN_BENCH__"
 
 # Host wrapper the mutation prompt asks for, per problem. Discovery falls back to other
 # top-level functions, but a kernel that follows this is always callable.
@@ -135,9 +135,9 @@ import torch, triton
 PREFERRED = ("solve", "custom_kernel", "run", "launch", "main")
 
 def load_candidate(path):
-    spec = importlib.util.spec_from_file_location("_miniavo_candidate", path)
+    spec = importlib.util.spec_from_file_location("_kerngen_candidate", path)
     module = importlib.util.module_from_spec(spec)
-    sys.modules["_miniavo_candidate"] = module
+    sys.modules["_kerngen_candidate"] = module
     spec.loader.exec_module(module)
     return module
 

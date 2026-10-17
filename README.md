@@ -179,7 +179,7 @@ the amount of work per program.
 
 The fastest run per kernel name is kept, this run's result supersedes a remembered one of the
 same name, and a store never reads back its own run. The file defaults to
-`.miniavo_memory.jsonl` next to the script (`FEEDBACK_FILE` overrides it) and is gitignored.
+`.kerngen_memory.jsonl` next to the script (`FEEDBACK_FILE` overrides it) and is gitignored.
 
 ### Baseline: what MiniAVO-Liquid produced
 
@@ -227,7 +227,7 @@ What the checks find is turned into instructions for the next prompt (`feedback.
 Repeated mistakes are merged with a "seen N×" count, and only the most recent few are kept.
 
 **Feedback memory.** With `--feedback-memory local` (the default), lessons last for one run.
-With `--feedback-memory file`, they are appended to `.miniavo_memory.jsonl` next to the script
+With `--feedback-memory file`, they are appended to `.kerngen_memory.jsonl` next to the script
 and read back by the next run on the same problem and hardware — measured timings included.
 With `--feedback-memory rawtree`, every lesson and candidate outcome is also written as an event
 to a [RawTree](https://rawtree.com) table (Tinybird's analytics database for unstructured data; the
@@ -236,7 +236,7 @@ lessons back with SQL, so it starts out knowing the mistakes earlier runs made. 
 can be queried for analysis across runs, for example:
 
 ```sql
-SELECT status, count() FROM miniavo_feedback
+SELECT status, count() FROM kerngen_feedback
 WHERE kind = 'candidate' AND problem = 'matmul_v2' GROUP BY status
 ```
 

@@ -119,7 +119,7 @@ def feedback_frame(gen_label, benched):
     d.rounded_rectangle([340, 188, 566, 298], radius=10, fill=CARD, outline=ACCENT, width=2)
     d.text((453, 210), "Feedback memory", font=F_H, fill=ACCENT, anchor="mm")
     d.text((453, 237), "local: this run", font=F_S, fill=INK, anchor="mm")
-    d.text((453, 258), "file: .miniavo_memory.jsonl", font=F_S, fill=INK, anchor="mm")
+    d.text((453, 258), "file: .kerngen_memory.jsonl", font=F_S, fill=INK, anchor="mm")
     d.text((453, 279), "RawTree: across runs", font=F_S, fill=INK, anchor="mm")
     arrow(d, (568, 243), (604, 243), ACCENT, 3)
     d.rounded_rectangle([606, 112, 930, 388], radius=10, fill=CARD, outline=LINE)

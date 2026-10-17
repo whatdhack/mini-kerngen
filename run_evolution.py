@@ -389,7 +389,7 @@ def call_mutation_agent(prompt: str, model: str, spec: ProviderSpec) -> Dict[str
 
     client = OpenAI(base_url=spec.base_url, api_key=provider_api_key(spec))
     messages = [
-        {"role": "system", "content": "You are MiniAVO AI, an expert GPU kernel architect. Respond with a single JSON object only."},
+        {"role": "system", "content": "You are mini-kerngen, an expert GPU kernel architect. Respond with a single JSON object only."},
         {"role": "user", "content": prompt},
     ]
     max_tokens = int(os.getenv("LLM_MAX_TOKENS") or os.getenv("LIQUID_MAX_TOKENS") or spec.default_max_tokens)
@@ -623,7 +623,7 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
             seed_source = found["source_url"]
 
     print("\n" + "="*75)
-    print(f"  MiniAVO: Autonomous GPU Kernel Evolutionary Search (Python Engine)")
+    print(f"  mini-kerngen: Autonomous GPU Kernel Evolutionary Search (Python Engine)")
     print("="*75)
     print(f"  Target Hardware : {hw.name} ({hw.architecture})")
     print(f"  Peak Bandwidth  : {hw.memory_bandwidth_gbs} GB/s | Peak TFLOPS (FP16): {hw.peak_fp16_tflops}")
@@ -798,7 +798,7 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
 
 if __name__ == "__main__":
     load_dotenv()
-    parser = argparse.ArgumentParser(description="MiniAVO Autonomous GPU Kernel Evolutionary Pipeline")
+    parser = argparse.ArgumentParser(description="mini-kerngen autonomous GPU kernel evolutionary pipeline")
     parser.add_argument("--problem", type=str, default="matmul_v2", choices=list(PROBLEMS.keys()), help="GPU MODE problem ID")
     parser.add_argument("--hardware", type=str, default="b200", choices=list(HARDWARE_CATALOG.keys()),
                         help="Target GPU hardware ID (use gb10 with --gpu-bench-every on the local DGX Spark)")
