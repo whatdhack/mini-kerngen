@@ -2,15 +2,27 @@
 
 **Evolutionary search for Triton kernels with an LLM: compile-checked without a GPU, timed on one when there is one.**
 
-![mini-kerngen loop: each generation one LLM call turns the parent kernel into a candidate, which is filtered by a Python syntax check and an ahead-of-time Triton compile, scored statically, and every Nth generation run on a real GPU for correctness and time; the best becomes the next parent, and what the checks and the GPU run found is turned into instructions for the next generation's prompt](assets/demo.gif)
+![mini-kerngen loop: each generation one LLM call turns the parent kernel into a candidate. Candidates pass a Python syntax check and an ahead-of-time Triton compile, then two planned stages drawn in purple: an anti-gaming sanitizer and a model + analytical heuristic evaluator (static score today; CPU deviation, tcgen05 numerics and a timed Petri net planned). Every Nth generation the survivors run on a real GPU for correctness and time. The best becomes the next parent, and what the checks found becomes instructions in the next prompt, with KernelWiki pages added once the search stalls (planned)](assets/demo.gif)
 
 mini-kerngen builds on [MiniAVO-Liquid](https://github.com/whatdhack/mini-avo-liquid). The loop described below
-works today, and [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html) is the
-default model provider. The rest of the [plan](docs/PLAN.md) is still being built:
+works today, with [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html) as the
+default model provider. Three components from the [plan](docs/PLAN.md) are being added, each drawn in purple in the
+animation and each built on published work (see [References](#references)):
 
-- grounding mutations in [KernelWiki](https://github.com/mit-han-lab/KernelWiki);
-- checking correctness and catching reward hacking on the CPU;
-- a B200 pipeline model.
+- **Anti-Gaming Sanitizer.** Static and dynamic checks against reward hacking, after
+  [AKO4X](https://github.com/TongmingLAIC/AKO4X):
+  - its varying-input cheat check, which grew out of
+    [flashinfer-bench #413](https://github.com/flashinfer-ai/flashinfer-bench/pull/413);
+  - poison-cell tests;
+  - its rule that the operator must not be delegated to a library.
+- **Model + Analytical Heuristic Evaluator.** Three checks that need no GPU:
+  - correctness on the CPU through the Triton interpreter;
+  - B200-exact numerics for narrow formats from [tcgen05-model](https://github.com/sf-tensor/tcgen05);
+  - a timed [Petri net](https://doi.org/10.1109/5.24143) of the TMA → `tcgen05.mma` → epilogue pipeline, following
+    [CUTLASS's pipeline semantics](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/pipeline.md), which
+    predicts stalls and latency.
+- **[KernelWiki](https://github.com/mit-han-lab/KernelWiki).** Optimization techniques chosen by the kernel's
+  symptoms, added to the prompt once the search stalls.
 
 ## Status
 
@@ -18,10 +30,11 @@ default model provider. The rest of the [plan](docs/PLAN.md) is still being buil
 |---|---|
 | Evolution loop: one LLM call per generation, GPU-less Triton compile, static score, optional GPU timing, feedback memory | Working (from MiniAVO-Liquid) |
 | Crusoe Intelligence Foundry with `deepseek-ai/DeepSeek-V4-Flash` as the default provider | Working; covered by tests against a fake client, no live runs yet |
-| CPU correctness through the Triton interpreter; anti-gaming sanitizer | Planned (Phase 1) |
+| Anti-Gaming Sanitizer (after AKO4X) | Planned (Phase 1) |
+| Model + Analytical Heuristic Evaluator, part 1: CPU correctness through the Triton interpreter | Planned (Phase 1) |
 | Stagnation-driven exploit/explore; per-run `ITERATIONS.md` trajectory | Planned (Phase 2) |
 | KernelWiki retrieval (the submodule is already in `external/KernelWiki`) | Planned (Phase 3) |
-| B200 evaluator: tcgen05 numerics and a timed Petri net | Planned (Phase 4) |
+| Model + Analytical Heuristic Evaluator, part 2: tcgen05-model numerics and a timed Petri net for B200 | Planned (Phase 4) |
 | A reflector that writes winning patterns back as KernelWiki pages | Planned (Phase 6) |
 
 [docs/PLAN.md](docs/PLAN.md) has the design and the order of the phases. It also records:
@@ -397,16 +410,45 @@ pytest     # CPU only; no API keys or network needed
 | `tests/` | CPU-only tests (`pytest`) |
 | `assets/make_demo_gif.py` | Regenerates `assets/demo.gif` |
 
-## Built on
+## References
 
-- **[MiniAVO-Liquid](https://github.com/whatdhack/mini-avo-liquid):** the loop this repo starts from. It began as
-  the standalone Python part of `mini-avo-gs`.
-- **[KernelWiki](https://github.com/mit-han-lab/KernelWiki) (MIT HAN Lab):** a Blackwell and Hopper kernel
-  optimization knowledge base, the planned retrieval source.
-- **[AKO4X](https://github.com/TongmingLAIC/AKO4X):** the planned sanitizer and trajectory follow its varying-input
-  cheat check, its rule against delegating the operator to a library, and its `ITERATIONS.md` format.
-- **[tcgen05-model](https://github.com/sf-tensor/tcgen05) (San Francisco Tensor Company):** bit-accurate Blackwell
-  MMA arithmetic, for the planned B200 evaluator.
-- **[Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html):** the default
+**Origin**
+
+- [MiniAVO-Liquid](https://github.com/whatdhack/mini-avo-liquid): the loop this repo starts from. It began as the
+  standalone Python part of `mini-avo-gs`.
+
+**Anti-Gaming Sanitizer**
+
+- [AKO4X](https://github.com/TongmingLAIC/AKO4X) and the
+  [AKO tech report](https://tongminglaic.github.io/AKO/assets/ako-tech-report.pdf). Sources of:
+  - the varying-input cheat check;
+  - the poison-cell tests;
+  - the rule against delegating the operator to a library;
+  - the `ITERATIONS.md` trajectory format.
+- [flashinfer-bench #413](https://github.com/flashinfer-ai/flashinfer-bench/pull/413): random inputs on every timed
+  iteration, so a cached output can't pass. AKO4X's cheat check builds on it.
+
+**Model + Analytical Heuristic Evaluator**
+
+- [tcgen05-model](https://github.com/sf-tensor/tcgen05) (San Francisco Tensor Company): bit-accurate Blackwell
+  `tcgen05` MMA arithmetic, used for the functional check (Tier 1).
+- T. Murata, [Petri nets: Properties, analysis and applications](https://doi.org/10.1109/5.24143), *Proceedings of
+  the IEEE* 77(4), 1989: timed Petri nets, for the pipeline model (Tier 2).
+- [CUTLASS synchronization primitives](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/pipeline.md): the
+  producer/consumer pipeline semantics the Petri net models.
+- A. Jarmusch and S. Chandrasekaran,
+  [Microbenchmarking NVIDIA's Blackwell Architecture](https://arxiv.org/abs/2512.02189): measured B200 behaviour,
+  for calibrating the model.
+- [NVIDIA PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/): `tcgen05`, TMEM and `mbarrier`
+  semantics.
+
+**Knowledge**
+
+- [KernelWiki](https://github.com/mit-han-lab/KernelWiki) (MIT HAN Lab): a Blackwell and Hopper kernel optimization
+  knowledge base, pinned as a submodule.
+
+**Infrastructure**
+
+- [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html): the default
   inference provider.
-- **[GPU MODE](https://www.gpumode.com):** the problem definitions.
+- [GPU MODE](https://www.gpumode.com): the problem definitions.
