@@ -1,20 +1,63 @@
-# MiniAVO-Liquid
+# mini-kerngen
 
-**Evolutionary search for Triton kernels: compile-checked without a GPU, timed on one when there is one.**
+**Evolutionary search for Triton kernels with an LLM: compile-checked without a GPU, timed on one when there is one.**
 
-![MiniAVO-Liquid loop: a parent kernel is mutated by an LLM into candidate kernels, which are filtered by a Python syntax check and an ahead-of-time Triton compile, scored statically, and every Nth generation run on a real GPU for correctness and time; the best becomes the next parent, and what the checks and the GPU run found is turned into instructions for the next generation's prompt](assets/demo.gif)
+![mini-kerngen loop: each generation one LLM call turns the parent kernel into a candidate. Candidates pass a Python syntax check and an ahead-of-time Triton compile, then two planned stages drawn in purple: an anti-gaming sanitizer and a model + analytical heuristic evaluator (static score today; CPU deviation, tcgen05 numerics and a timed Petri net planned). Every Nth generation the survivors run on a real GPU for correctness and time. The best becomes the next parent, and what the checks found becomes instructions in the next prompt, with KernelWiki pages added once the search stalls (planned)](assets/demo.gif)
+
+mini-kerngen builds on [MiniAVO-Liquid](https://github.com/whatdhack/mini-avo-liquid). The loop described below
+works today, with [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html) as the
+default model provider. Its default model is `deepseek-ai/Deepseek-V4-Flash`; an
+[NVIDIA Nemotron](https://developer.nvidia.com/nemotron) model such as `nvidia/Nemotron-3.5-Lightning-30B-A3B` can be
+selected with `--model`. Three components from the [plan](docs/PLAN.md) are being added, each drawn in purple in the
+animation and each built on published work (see [References](#references)):
+
+- **Anti-Gaming Sanitizer.** Static and dynamic checks against reward hacking, after
+  [AKO4X](https://github.com/TongmingLAIC/AKO4X):
+  - its varying-input cheat check, which grew out of
+    [flashinfer-bench #413](https://github.com/flashinfer-ai/flashinfer-bench/pull/413);
+  - poison-cell tests;
+  - its rule that the operator must not be delegated to a library.
+- **Model + Analytical Heuristic Evaluator.** Three checks that need no GPU:
+  - correctness on the CPU through the Triton interpreter;
+  - B200-exact numerics for narrow formats from [tcgen05-model](https://github.com/sf-tensor/tcgen05);
+  - a timed [Petri net](https://doi.org/10.1109/5.24143) of the TMA → `tcgen05.mma` → epilogue pipeline, following
+    [CUTLASS's pipeline semantics](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/pipeline.md), which
+    predicts stalls and latency.
+- **[KernelWiki](https://github.com/mit-han-lab/KernelWiki).** Optimization techniques chosen by the kernel's
+  symptoms, added to the prompt once the search stalls.
+
+## Status
+
+| Component | State |
+|---|---|
+| Evolution loop: one LLM call per generation, GPU-less Triton compile, static score, optional GPU timing, feedback memory | Working (from MiniAVO-Liquid) |
+| Crusoe Intelligence Foundry as the default provider: `deepseek-ai/Deepseek-V4-Flash` by default, NVIDIA Nemotron with `--model` | Working; model IDs checked against Crusoe's live catalog, tests against a fake client, no generations run yet |
+| Anti-Gaming Sanitizer (after AKO4X) | Planned (Phase 1) |
+| Model + Analytical Heuristic Evaluator, part 1: CPU correctness through the Triton interpreter | Planned (Phase 1) |
+| Stagnation-driven exploit/explore; per-run `ITERATIONS.md` trajectory | Planned (Phase 2) |
+| KernelWiki retrieval (the submodule is already in `external/KernelWiki`) | Planned (Phase 3) |
+| Model + Analytical Heuristic Evaluator, part 2: tcgen05-model numerics and a timed Petri net for B200 | Planned (Phase 4) |
+| A reflector that writes winning patterns back as KernelWiki pages | Planned (Phase 6) |
+
+[docs/PLAN.md](docs/PLAN.md) has the design and the order of the phases. It also records:
+
+- where the original design notes disagree with the projects they build on: B200 constants, KernelWiki's page
+  schema, and the tcgen05 model's API;
+- the reward-hacking gaps in today's GPU harness, which Phase 1 closes.
 
 ## What it does
 
-MiniAVO-Liquid runs an evolutionary loop over GPU kernels for
+mini-kerngen runs an evolutionary loop over GPU kernels for
 [GPU MODE](https://www.gpumode.com)-style problems (`matmul_v2`, `vectorsum_v2`, `cholesky`,
 `trimul_alphafold3`) on target GPUs from A100 to H100, B200 and the GB10:
 
 1. **Seed.** Start from a naive kernel in `seeds/naive/`, or search the web for a better one
    with [Nimble](https://docs.nimbleway.com) (`--web-seed`).
-2. **Mutate.** An LLM (`liquid/lfm-2.5-2.6b:free` on OpenRouter by default, or `glm-5.3` on
-   Vultr Serverless Inference with `--provider vultr`) rewrites
-   the current parent kernel, following an optimization strategy and optional steering prompt.
+2. **Mutate.** An LLM rewrites the current parent kernel in one call per generation, following an optimization
+   strategy and an optional steering prompt. The model is `deepseek-ai/Deepseek-V4-Flash` on Crusoe Intelligence
+   Foundry by default. Crusoe also serves NVIDIA Nemotron: `--model nvidia/Nemotron-3.5-Lightning-30B-A3B`, or
+   `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B` for a larger model. Other providers are `liquid/lfm-2.5-2.6b:free` on
+   OpenRouter (`--provider openrouter`) and `glm-5.3` on Vultr Serverless Inference (`--provider vultr`).
 3. **Check.** Each candidate must parse as Python and compile as Triton for the target GPU.
 4. **Score.** Candidates that compile get a static performance score. Every Nth generation,
    the candidate is also run on a real GPU (`--gpu-bench-every N`): checked against a torch
@@ -29,9 +72,6 @@ The loop repeats for `--generations` rounds.
 
 Everything is written to a lineage JSON (every candidate, including failed ones and why they
 failed) and a submission script containing the best kernel.
-
-It started as the standalone Python part of `mini-avo-gs`, with the mutation agent moved from
-Gemini to Liquid AI.
 
 ### How kernels are judged
 
@@ -126,6 +166,14 @@ only trusted imports, function definitions and literal constants are loaded befo
 The GPU path does execute them, which is the point of it, so every run is a separate interpreter
 with a wall-clock timeout.
 
+**Known gaps:** the GPU harness can still be gamed, and Phase 1 of the [plan](docs/PLAN.md) (§2.6) closes these:
+
+- The candidate is imported before the reference is computed, so its import-time code could replace
+  `torch.allclose` or `do_bench`.
+- A result cached by input pointer would time at about 0 µs.
+- A wrapper could return `torch.matmul(a, b)` next to a kernel it never launches.
+- The subprocess also inherits the parent's environment, API keys included.
+
 #### Remembering measurements across runs
 
 A static score can be recomputed from the code at any time; a timing cannot — it only exists
@@ -147,12 +195,14 @@ the amount of work per program.
 
 The fastest run per kernel name is kept, this run's result supersedes a remembered one of the
 same name, and a store never reads back its own run. The file defaults to
-`.miniavo_memory.jsonl` next to the script (`FEEDBACK_FILE` overrides it) and is gitignored.
+`.kerngen_memory.jsonl` next to the script (`FEEDBACK_FILE` overrides it) and is gitignored.
 
-### What it has actually produced
+### Baseline: what MiniAVO-Liquid produced
 
-Measured on an NVIDIA GB10 (DGX Spark, sm_121) with `glm-5.3` on Vultr Serverless Inference.
-"Best found" is the fastest kernel the search produced that passed the GPU harness at the time.
+mini-kerngen has no results of its own yet. These are MiniAVO-Liquid's, and they are the numbers to beat.
+
+They were measured on an NVIDIA GB10 (DGX Spark, sm_121) with `glm-5.3` on Vultr Serverless Inference. "Best found"
+is the fastest kernel the search produced that passed the GPU harness at the time.
 
 | Problem | Seed | Best found | Library reference |
 |---|---|---|---|
@@ -172,7 +222,8 @@ Read those with the caveats:
 - **The GEMM search converged at generation 12 and then stalled for 88 generations.** 20 of its 30
   timed candidates were the same five launch configurations under different names, and its final
   kernel is 7.6% slower than the same code at `128×256×64 / 8 warps / 3 stages` — two constants
-  away, never tried.
+  away, never tried. Phase 2 of the plan, stagnation detection with a deterministic launch-constant
+  sweep, targets exactly this.
 
 ### Feedback to the next generation
 
@@ -192,7 +243,7 @@ What the checks find is turned into instructions for the next prompt (`feedback.
 Repeated mistakes are merged with a "seen N×" count, and only the most recent few are kept.
 
 **Feedback memory.** With `--feedback-memory local` (the default), lessons last for one run.
-With `--feedback-memory file`, they are appended to `.miniavo_memory.jsonl` next to the script
+With `--feedback-memory file`, they are appended to `.kerngen_memory.jsonl` next to the script
 and read back by the next run on the same problem and hardware — measured timings included.
 With `--feedback-memory rawtree`, every lesson and candidate outcome is also written as an event
 to a [RawTree](https://rawtree.com) table (Tinybird's analytics database for unstructured data; the
@@ -201,33 +252,12 @@ lessons back with SQL, so it starts out knowing the mistakes earlier runs made. 
 can be queried for analysis across runs, for example:
 
 ```sql
-SELECT status, count() FROM miniavo_feedback
+SELECT status, count() FROM kerngen_feedback
 WHERE kind = 'candidate' AND problem = 'matmul_v2' GROUP BY status
 ```
 
 If RawTree is unreachable or the key is wrong, the run prints one warning and continues with
 in-memory feedback.
-
-### Generation fan-out (planned)
-
-Today the CLI produces **one candidate per generation**. The planned design fans out each
-generation:
-
-```
-population = [seed]
-for gen in 1..g:
-    children  = parallel(liquid(parent, strategy_i) for parent in population for i in 1..n)
-    survivors = [c for c in children if syntax_ok(c) and triton_compiles(c)]   # cheap filters
-    population = top_k(population + score(survivors))                         # parents stay in the pool
-```
-
-- **Parallel drafts:** the free model is called n times per parent, each with a different
-  strategy for variety, and duplicates are dropped.
-- **Cheap filters:** the syntax check and compile remove most bad drafts before scoring.
-- **Elitism:** keeping the top k (parents included) bounds the population and stops it from
-  dying out when every child fails.
-- **Rate limits:** calls are throttled to OpenRouter's free-tier limits; Vultr Serverless
-  Inference is paid per token and has no free-tier throttle.
 
 ## How to run
 
@@ -236,10 +266,14 @@ for gen in 1..g:
 Python 3.12 with the latest PyTorch and Triton (PyTorch 2.14 pins Triton 3.8):
 
 ```bash
-conda create -n mini-avo-liquid python=3.12 -y
-conda activate mini-avo-liquid
+git clone --recurse-submodules https://github.com/whatdhack/mini-kerngen   # KernelWiki is a submodule (external/KernelWiki)
+cd mini-kerngen
+conda create -n mini-kerngen python=3.12 -y
+conda activate mini-kerngen
 pip install -r requirements.txt
 ```
+
+In an existing checkout, `git submodule update --init` fetches KernelWiki.
 
 No GPU or CUDA driver is needed. Triton ships the `ptxas` and `cuobjdump` used for the compile
 and static analysis.
@@ -255,25 +289,30 @@ cp .env.example .env
 
 | Variable | Needed for |
 |---|---|
+| `CRUSOE_API_KEY` | Mutations via Crusoe Intelligence Foundry, the default provider. Create it in the Crusoe console under Admin → Security → Intelligence API keys. |
+| `CRUSOE_MODEL` | Optional Crusoe override (default: `deepseek-ai/Deepseek-V4-Flash`, with `LLM_MAX_TOKENS` defaulting to `32768`), e.g. `nvidia/Nemotron-3.5-Lightning-30B-A3B` for NVIDIA Nemotron. Use IDs exactly as `--list-models crusoe` prints them |
 | `OPENROUTER_API_KEY` | Mutations via OpenRouter (Liquid models). |
 | `VULTR_SERVERLESS_INFERENCE_API_KEY` | Mutations via Vultr Serverless Inference. `VULTR_INFERENCE_API_KEY` and `VULTR_API_KEY` also work. |
 | `NIMBLE_API_KEY` | `--web-seed` only |
 | `RAWTREE_API_KEY` (+ optional `RAWTREE_DATABASE`, `RAWTREE_FEEDBACK_TABLE`) | `--feedback-memory rawtree` only; the key needs `read_write` permission |
 | `LIQUID_MODEL`, `LIQUID_MAX_TOKENS`, `LIQUID_REASONING_EFFORT` | Optional OpenRouter overrides (defaults: `liquid/lfm-2.5-2.6b:free`, `8192`, `high`) |
 | `VULTR_MODEL`, `VULTR_REASONING_EFFORT`, `LLM_MAX_TOKENS` | Optional Vultr overrides (defaults: `glm-5.3`, `low`, `32768`) |
-| `LLM_PROVIDER` | Pins the provider (`openrouter` or `vultr`); same as `--provider` |
+| `LLM_PROVIDER` | Pins the provider (`crusoe`, `openrouter` or `vultr`); same as `--provider` |
 
-With no provider key, every generation uses the deterministic simulator. With both keys set,
-OpenRouter is used unless `--provider vultr` or `LLM_PROVIDER=vultr` says otherwise. Only the
-base URL, key and model default differ between the two: both are called through the OpenAI SDK,
-and the OpenRouter-only `X-Title` header and `reasoning.effort` body field are dropped for Vultr.
-`response_format={"type":"json_object"}` is attempted first and retried without it on a 400/422,
-then retried again without the thinking-budget field, so providers that reject either still work.
+With no provider key, every generation uses the deterministic simulator. With several keys set,
+the first of Crusoe, OpenRouter and Vultr is used unless `--provider` or `LLM_PROVIDER` says
+otherwise. Only the base URL, key and model default differ between them: all are called through
+the OpenAI SDK, and the `X-Title` header and `reasoning.effort` body field are sent to OpenRouter
+only. `response_format={"type":"json_object"}` is attempted first and retried without it on a
+400/422 or an empty reply, then retried again without the thinking-budget field, so providers
+that reject either still work. Whatever a provider refused once is not sent again in that run.
 
 The thinking budget is provider-shaped: OpenRouter takes `{"reasoning": {"effort": …}}` and
 defaults to `high`; Vultr takes a flat `reasoning_effort` and defaults to `low`, because
 `glm-5.3` at the default effort spends all 32k output tokens reasoning about the mutation
-prompt and never emits the JSON object.
+prompt and never emits the JSON object. Crusoe documents no thinking-budget field, so none is
+sent; DeepSeek V4 reasons before it answers and that reasoning counts toward `max_tokens`, hence
+the 32k default.
 
 ### 3. Run
 
@@ -295,13 +334,16 @@ python run_evolution.py --problem vectorsum_v2 --hardware gb10 --gpu-bench-every
 
 # Steer the mutations, or pick another model
 python run_evolution.py --problem matmul_v2 --steer "Use TMA descriptors and warp specialization"
-python run_evolution.py --model liquid/lfm-2.5-1.2b-instruct:free
+python run_evolution.py --model deepseek-ai/DeepSeek-V4-Pro
+python run_evolution.py --model nvidia/Nemotron-3.5-Lightning-30B-A3B     # NVIDIA Nemotron on Crusoe
 
-# Mutate with Vultr Serverless Inference instead of OpenRouter
+# Mutate with another provider instead of Crusoe
+python run_evolution.py --problem matmul_v2 --provider openrouter --model liquid/lfm-2.5-1.2b-instruct:free
 python run_evolution.py --problem matmul_v2 --provider vultr
 python run_evolution.py --provider vultr --model qwen3.8-27b
 
-# What can each provider serve? (no API key needed)
+# What can each provider serve? (Crusoe's catalog needs CRUSOE_API_KEY; Vultr's needs no key)
+python run_evolution.py --list-models crusoe
 python run_evolution.py --list-models vultr
 
 # Time every 3rd generation on the local GB10 (DGX Spark, sm_121)
@@ -322,9 +364,9 @@ compile check targets the same architecture it will run on.
 | `--generations` | number of generations | `5` |
 | `--web-seed` / `--refresh-seed` | start from a Nimble-found kernel / ignore the cache | off |
 | `--steer` | free-text guidance added to the mutation prompt | none |
-| `--provider` | `openrouter`, `vultr` | whichever API key is set (OpenRouter first) |
-| `--model` | any model ID the provider serves | provider default: `liquid/lfm-2.5-2.6b:free`, `glm-5.3` |
-| `--list-models` | `openrouter`, `vultr` | prints the catalog and exits |
+| `--provider` | `crusoe`, `openrouter`, `vultr` | whichever API key is set (Crusoe first) |
+| `--model` | any model ID the provider serves, e.g. `nvidia/Nemotron-3.5-Lightning-30B-A3B` on Crusoe | provider default: `deepseek-ai/Deepseek-V4-Flash`, `liquid/lfm-2.5-2.6b:free`, `glm-5.3` |
+| `--list-models` | `crusoe`, `openrouter`, `vultr` | prints the catalog and exits |
 | `--gpu-bench-every` | run generation N, 2N, … on a real GPU (`0` disables); env `GPU_BENCH_EVERY` | `0` |
 | `--gpu-bench-timeout` | seconds one GPU benchmark subprocess may take | `300` |
 | `--feedback-memory` | `local` (this run only), `file` (JSONL next to the script) or `rawtree` | `local` |
@@ -347,11 +389,17 @@ Files written to the current directory:
   anywhere. With it, the lineage also carries `measured_latency_us`, `measured_speedup` and
   `bench_status` per candidate.
 
+### 5. Tests
+
+```bash
+pytest     # CPU only; no API keys or network needed
+```
+
 ## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `run_evolution.py` | CLI and evolution loop, provider registry (OpenRouter, Vultr), problem and hardware catalog |
+| `run_evolution.py` | CLI and evolution loop, provider registry (Crusoe, OpenRouter, Vultr), problem and hardware catalog |
 | `triton_check.py` | Safe loading plus ahead-of-time Triton compile for the target GPU |
 | `gpu_bench.py` | Optional real-GPU correctness check and timing, in a subprocess with a timeout |
 | `static_perf.py` | Static metrics (PTX / cubin / metadata) and the 0–100 score |
@@ -361,4 +409,55 @@ Files written to the current directory:
 | `seed_search.py` | Nimble web search for seed kernels; slices out each `@triton.jit` kernel with its helpers |
 | `seeds/naive/` | Built-in starter kernels, one `.py` per problem |
 | `seeds/web/` | Cached web seeds (`--web-seed`) |
+| `docs/PLAN.md` | The plan: what mini-kerngen adds, and in which order |
+| `external/KernelWiki/` | [KernelWiki](https://github.com/mit-han-lab/KernelWiki) submodule, pinned |
+| `tests/` | CPU-only tests (`pytest`) |
 | `assets/make_demo_gif.py` | Regenerates `assets/demo.gif` |
+
+## References
+
+**Origin**
+
+- [MiniAVO-Liquid](https://github.com/whatdhack/mini-avo-liquid): the loop this repo starts from. It began as the
+  standalone Python part of `mini-avo-gs`.
+
+**Anti-Gaming Sanitizer**
+
+- [AKO4X](https://github.com/TongmingLAIC/AKO4X) and the
+  [AKO tech report](https://tongminglaic.github.io/AKO/assets/ako-tech-report.pdf). Sources of:
+  - the varying-input cheat check;
+  - the poison-cell tests;
+  - the rule against delegating the operator to a library;
+  - the `ITERATIONS.md` trajectory format.
+- [flashinfer-bench #413](https://github.com/flashinfer-ai/flashinfer-bench/pull/413): random inputs on every timed
+  iteration, so a cached output can't pass. AKO4X's cheat check builds on it.
+
+**Model + Analytical Heuristic Evaluator**
+
+- [tcgen05-model](https://github.com/sf-tensor/tcgen05) (San Francisco Tensor Company): bit-accurate Blackwell
+  `tcgen05` MMA arithmetic, used for the functional check (Tier 1).
+- T. Murata, [Petri nets: Properties, analysis and applications](https://doi.org/10.1109/5.24143), *Proceedings of
+  the IEEE* 77(4), 1989: timed Petri nets, for the pipeline model (Tier 2).
+- [CUTLASS synchronization primitives](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/pipeline.md): the
+  producer/consumer pipeline semantics the Petri net models.
+- A. Jarmusch and S. Chandrasekaran,
+  [Microbenchmarking NVIDIA's Blackwell Architecture](https://arxiv.org/abs/2512.02189): measured B200 behaviour,
+  for calibrating the model.
+- [NVIDIA PTX ISA](https://docs.nvidia.com/cuda/parallel-thread-execution/): `tcgen05`, TMEM and `mbarrier`
+  semantics.
+
+**Knowledge**
+
+- [KernelWiki](https://github.com/mit-han-lab/KernelWiki) (MIT HAN Lab): a Blackwell and Hopper kernel optimization
+  knowledge base, pinned as a submodule.
+
+**Models and inference**
+
+- [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html): the default
+  inference provider, serving `deepseek-ai/Deepseek-V4-Flash` (the default model) and NVIDIA Nemotron.
+- [NVIDIA Nemotron](https://developer.nvidia.com/nemotron): open models available on Crusoe as alternative mutation
+  models, e.g. `nvidia/Nemotron-3.5-Lightning-30B-A3B` and `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B`.
+
+**Problems**
+
+- [GPU MODE](https://www.gpumode.com): the problem definitions.

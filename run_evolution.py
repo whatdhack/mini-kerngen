@@ -4,6 +4,7 @@ import sys
 import json
 import time
 import argparse
+import urllib.error
 from dataclasses import dataclass, field, asdict, replace
 from typing import List, Dict, Optional, Any
 
@@ -33,7 +34,7 @@ HARDWARE_CATALOG: Dict[str, HardwareProfile] = {
         memory_bandwidth_gbs=8000.0,
         l2_cache_mb=72.0,
         shared_mem_per_sm_kb=228.0,
-        num_sms=160
+        num_sms=148  # enabled SMs; the die has more
     ),
     "gb10": HardwareProfile(
         id="gb10",
@@ -215,6 +216,7 @@ class KernelVariant:
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 VULTR_BASE_URL = "https://api.vultrinference.com/v1"
+CRUSOE_BASE_URL = "https://api.inference.crusoecloud.com/v1"
 # Largest free Liquid AI model on OpenRouter (https://openrouter.ai/liquid)
 DEFAULT_LIQUID_MODEL = "liquid/lfm-2.5-2.6b:free"
 # lfm-2.5-2.6b allows at most 8192 output tokens, and hidden reasoning counts toward that limit
@@ -239,6 +241,20 @@ class ProviderSpec:
     reasoning_envs: tuple = ()
 
 PROVIDERS: Dict[str, ProviderSpec] = {
+    "crusoe": ProviderSpec(
+        id="crusoe",
+        label="Crusoe Intelligence Foundry",
+        base_url=CRUSOE_BASE_URL,
+        key_envs=("CRUSOE_API_KEY",),
+        # Catalog: GET https://api.inference.crusoecloud.com/v1/models (also `--list-models crusoe`). Use the
+        # IDs exactly as it lists them; they differ from Crusoe's docs page ("Deepseek", not "DeepSeek").
+        # NVIDIA Nemotron is served too, e.g. nvidia/Nemotron-3.5-Lightning-30B-A3B (CRUSOE_MODEL or --model)
+        default_model="deepseek-ai/Deepseek-V4-Flash",
+        model_envs=("CRUSOE_MODEL",),
+        # DeepSeek V4 thinks before it answers and the reasoning counts toward max_tokens. Crusoe
+        # documents no thinking-budget field, so none is sent; leave room for the reasoning instead
+        default_max_tokens=32768,
+    ),
     "openrouter": ProviderSpec(
         id="openrouter",
         label="OpenRouter",
@@ -246,7 +262,7 @@ PROVIDERS: Dict[str, ProviderSpec] = {
         key_envs=("OPENROUTER_API_KEY",),
         default_model=DEFAULT_LIQUID_MODEL,
         model_envs=("LIQUID_MODEL",),
-        extra_headers={"X-Title": "MiniAVO-Liquid"},
+        extra_headers={"X-Title": "mini-kerngen"},
         reasoning_param="openrouter",
         reasoning_effort=DEFAULT_REASONING_EFFORT,
         reasoning_envs=("LIQUID_REASONING_EFFORT", "LLM_REASONING_EFFORT"),
@@ -269,7 +285,9 @@ PROVIDERS: Dict[str, ProviderSpec] = {
     ),
 }
 # Auto-detection order when --provider is not given
-PROVIDER_ORDER = ("openrouter", "vultr")
+PROVIDER_ORDER = ("crusoe", "openrouter", "vultr")
+# Per provider, the first request variant in call_mutation_agent still worth sending this run
+_FIRST_ATTEMPT: Dict[str, int] = {}
 
 def provider_api_key(spec: ProviderSpec) -> Optional[str]:
     for env in spec.key_envs:
@@ -373,7 +391,7 @@ def call_mutation_agent(prompt: str, model: str, spec: ProviderSpec) -> Dict[str
 
     client = OpenAI(base_url=spec.base_url, api_key=provider_api_key(spec))
     messages = [
-        {"role": "system", "content": "You are MiniAVO AI, an expert GPU kernel architect. Respond with a single JSON object only."},
+        {"role": "system", "content": "You are mini-kerngen, an expert GPU kernel architect. Respond with a single JSON object only."},
         {"role": "user", "content": prompt},
     ]
     max_tokens = int(os.getenv("LLM_MAX_TOKENS") or os.getenv("LIQUID_MAX_TOKENS") or spec.default_max_tokens)
@@ -386,20 +404,30 @@ def call_mutation_agent(prompt: str, model: str, spec: ProviderSpec) -> Dict[str
     elif spec.reasoning_param == "openai":
         kwargs["extra_body"] = {"reasoning_effort": effort}
     # Drop the optional parts one at a time: some endpoints reject JSON mode, others the
-    # thinking-budget field. Only the last attempt is allowed to raise.
+    # thinking-budget field, and a thinking model can answer JSON mode with no content at all
+    # (reported for DeepSeek V4). Only the last attempt is allowed to raise. A part a provider
+    # refused once is not sent again this run, so later generations don't pay for the same failure.
     attempts = [("", dict(kwargs, response_format={"type": "json_object"})),
                 ("response_format", dict(kwargs))]
     if "extra_body" in kwargs:
         attempts.append(("extra_body", {k: v for k, v in kwargs.items() if k != "extra_body"}))
     resp = None
-    for i, (dropped, attempt) in enumerate(attempts):
+    for i in range(min(_FIRST_ATTEMPT.get(spec.id, 0), len(attempts) - 1), len(attempts)):
+        last = i == len(attempts) - 1
         try:
-            resp = client.chat.completions.create(**attempt)
-            break
+            resp = client.chat.completions.create(**attempts[i][1])
         except (BadRequestError, UnprocessableEntityError) as e:
-            if i == len(attempts) - 1:
+            if last:
                 raise
             print(f"[!] {spec.label} rejected {attempts[i + 1][0]} ({e}); retrying without it")
+            continue
+        choice = resp.choices[0]
+        if not last and choice.finish_reason != "length" and not (choice.message.content or "").strip():
+            print(f"[!] {spec.label} returned an empty reply (finish_reason={choice.finish_reason}); "
+                  f"retrying without {attempts[i + 1][0]}")
+            continue
+        _FIRST_ATTEMPT[spec.id] = i
+        break
     usage = resp.usage
     if usage is not None:
         details = getattr(usage, "completion_tokens_details", None)
@@ -597,7 +625,7 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
             seed_source = found["source_url"]
 
     print("\n" + "="*75)
-    print(f"  MiniAVO: Autonomous GPU Kernel Evolutionary Search (Python Engine)")
+    print(f"  mini-kerngen: Autonomous GPU Kernel Evolutionary Search (Python Engine)")
     print("="*75)
     print(f"  Target Hardware : {hw.name} ({hw.architecture})")
     print(f"  Peak Bandwidth  : {hw.memory_bandwidth_gbs} GB/s | Peak TFLOPS (FP16): {hw.peak_fp16_tflops}")
@@ -772,7 +800,7 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
 
 if __name__ == "__main__":
     load_dotenv()
-    parser = argparse.ArgumentParser(description="MiniAVO Autonomous GPU Kernel Evolutionary Pipeline")
+    parser = argparse.ArgumentParser(description="mini-kerngen autonomous GPU kernel evolutionary pipeline")
     parser.add_argument("--problem", type=str, default="matmul_v2", choices=list(PROBLEMS.keys()), help="GPU MODE problem ID")
     parser.add_argument("--hardware", type=str, default="b200", choices=list(HARDWARE_CATALOG.keys()),
                         help="Target GPU hardware ID (use gb10 with --gpu-bench-every on the local DGX Spark)")
@@ -803,7 +831,12 @@ if __name__ == "__main__":
         if spec is None:
             sys.exit(f"unknown provider {pid!r} (choices: {', '.join(PROVIDERS)})")
         print(f"# {spec.label} ({spec.base_url}/models), default: {provider_model(spec)}")
-        for model_id in list_provider_models(spec):
+        try:
+            model_ids = list_provider_models(spec)
+        except urllib.error.HTTPError as e:
+            hint = f"; set {spec.key_envs[0]}" if e.code in (401, 403) and provider_api_key(spec) is None else ""
+            sys.exit(f"{spec.label} model catalog: HTTP {e.code} {e.reason}{hint}")
+        for model_id in model_ids:
             print(model_id)
         sys.exit(0)
     run_evolution_pipeline(args.problem, args.hardware, args.generations, args.steer, args.model,
