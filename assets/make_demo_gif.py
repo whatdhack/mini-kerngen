@@ -1,8 +1,9 @@
-"""Render assets/demo.gif: an animated overview of the MiniAVO-Liquid loop.
+"""Render assets/demo.gif: an animated overview of the mini-kerngen loop.
 
-Illustrative only (no real results): candidates are drafted, filtered by the Python syntax
-check and the GPU-less Triton compile, scored statically, and every Nth generation the
-survivors are run on a real GPU — checked against a torch reference, then timed. The best
+Illustrative only (no real results): each generation makes one LLM call for one candidate;
+four candidates are drawn side by side so each check can be followed. Candidates are filtered
+by the Python syntax check and the GPU-less Triton compile, scored statically, and every Nth
+generation run on a real GPU — checked against a torch reference, then timed. The best
 becomes the next parent. What the checks and the GPU run found is turned into instructions
 (feedback memory: this run, a local file, or RawTree) for the next generation's prompt.
 
@@ -39,7 +40,7 @@ F_TITLE, F_H, F_B, F_S = font(26, True), font(16, True), font(15), font(12)
 # Pipeline columns: (x center, title, subtitle lines)
 STAGES = [
     (95, "Parent", ["seed: naive or", "web (Nimble)"]),
-    (228, "LLM agent", ["drafts candidates", "OpenRouter / Vultr"]),
+    (228, "LLM agent", ["1 call / generation", "Crusoe by default"]),
     (348, "1. Syntax", ["ast.parse"]),
     (474, "2. Compile", ["Triton, no GPU", "sm_80 … sm_121"]),
     (625, "3. Static score", ["regs · occupancy", "tensor cores · tiles"]),
@@ -57,8 +58,8 @@ BEST = 0
 def base(gen_label, caption, stages=True):
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
-    d.text((32, 22), "MiniAVO-Liquid", font=F_TITLE, fill=INK)
-    title_right = d.textbbox((32, 22), "MiniAVO-Liquid", font=F_TITLE)[2]
+    d.text((32, 22), "mini-kerngen", font=F_TITLE, fill=INK)
+    title_right = d.textbbox((32, 22), "mini-kerngen", font=F_TITLE)[2]
     d.text((title_right + 16, 31), "evolutionary search for Triton kernels: compile-checked, GPU-timed",
            font=F_B, fill=MUTED)
     d.text((W - 32, 31), gen_label, font=F_H, fill=ACCENT, anchor="ra")
@@ -143,7 +144,7 @@ def frames():
         img, d = base(g, "Start from the current parent kernel")
         parent_card(d)
         out.append((img, 900))
-        caption = ("The agent drafts N candidates in parallel (fan-out planned; CLI today: N = 1)"
+        caption = ("One LLM call per generation; four candidates are drawn side by side to follow the checks"
                    if gen == 1 else "The prompt now carries the rules and the measured timings from before")
         img, d = base(g, caption)
         parent_card(d)
@@ -211,14 +212,16 @@ def frames():
     img, d = base("", "No GPU needed to search; one on the machine turns the proxy into a measurement",
                   stages=False)
     lines = [("Problems", "matmul_v2 · vectorsum_v2 · cholesky · trimul_alphafold3"),
+             ("Model", "deepseek-ai/DeepSeek-V4-Flash on Crusoe, one call per generation"),
              ("Checks", "Python syntax → Triton compile (sm_80 … sm_121) → launch limits"),
              ("Static score", "registers band, spills, occupancy, load width, tensor cores, tiles"),
              ("GPU run", "--gpu-bench-every N: torch reference, extra shapes, then do_bench"),
              ("Feedback", "findings and timings → next prompt; memory: run, file or RawTree"),
-             ("Output", "lineage JSON + submission script for the best kernel")]
+             ("Output", "lineage JSON + submission script for the best kernel"),
+             ("Planned", "CPU correctness, anti-gaming, B200 model, KernelWiki (docs/PLAN.md)")]
     for i, (k, v) in enumerate(lines):
-        d.text((90, 142 + 46 * i), k, font=F_H, fill=ACCENT)
-        d.text((260, 143 + 46 * i), v, font=F_B, fill=INK)
+        d.text((90, 112 + 40 * i), k, font=F_H, fill=ACCENT)
+        d.text((260, 113 + 40 * i), v, font=F_B, fill=INK)
     out.append((img, 3000))
     return out
 
