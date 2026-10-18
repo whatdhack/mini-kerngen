@@ -209,6 +209,12 @@ class KernelVariant:
     bench_entry: Optional[str] = None  # host wrapper the harness called
     agent_error: Optional[str] = None  # why the Liquid call produced no usable reply (simulator fallback)
     prompt_feedback: str = ""  # check-derived instructions that were added to this generation's prompt
+    sanitizer_warnings: List[str] = field(default_factory=list)  # static policy findings that did not reject
+    entries: List[str] = field(default_factory=list)  # host functions that launch a kernel (static policy)
+    cpu_check: Dict[str, Any] = field(default_factory=dict)  # Triton-interpreter run: status, rel_error = DEVIATION
+    evaluator: Dict[str, Any] = field(default_factory=dict)  # B200 evaluator: gates and Petri-net prediction
+    operator: str = "mutate"  # "explore" when a KernelWiki technique page was in the prompt
+    kernelwiki_page: Optional[str] = None
 
 # ---------------------------------------------------------------------------
 # 4. Agentic Variation Operator (OpenAI-compatible LLM, or Heuristic Simulator)
@@ -449,8 +455,10 @@ def mutate_kernel_with_agent(
     user_guidance: str = "",
     model: str = "",
     feedback: str = "",
-    provider: Optional[ProviderSpec] = None
+    provider: Optional[ProviderSpec] = None,
+    gates: Optional["Gates"] = None
 ) -> KernelVariant:
+    gates = gates or Gates()
     agent_error = None
     # With a usable provider key, mutate with the real LLM; otherwise fall through to the simulator
     if provider is not None:
@@ -463,6 +471,12 @@ def mutate_kernel_with_agent(
                 "and benchmarked as written." if signature else
                 "The code must define a host wrapper that allocates the output and launches the kernel "
                 "with explicit BLOCK sizes and num_warps.")
+            entry_requirement += (
+                " Allocate outputs and any scratch memory on the inputs' device (device=x.device), never a "
+                "hardcoded 'cuda': every candidate is also checked on the CPU. Compute the operator in your own "
+                "@triton.jit kernel: the wrapper may allocate, reshape and launch, but not call torch.matmul, "
+                "x.sum(), torch.linalg or similar on its inputs, cache results between calls, import os/sys, or "
+                "modify torch or triton.")
             prompt = f"""
             Target Hardware: {hw.name} ({hw.architecture}) with {hw.memory_bandwidth_gbs} GB/s bandwidth and {hw.peak_fp16_tflops} TFLOPS.
             Benchmark Problem: {problem.name}
@@ -501,10 +515,7 @@ def mutate_kernel_with_agent(
             variant_name = data.get("variantName", f"v{generation_idx}_agent_opt")
             description = data.get("description", "LLM-synthesized micro-architectural optimization")
 
-            check_error = check_syntax(code)
-            static: Dict[str, Any] = {}
-            if check_error is None:
-                check_error, static = analyze_kernel(code, problem, hw)
+            check_error, static, found = run_gates(code, problem, hw, gates)
             if check_error:
                 # Keep the broken kernel in the lineage for inspection, but never promote it
                 return KernelVariant(
@@ -512,7 +523,7 @@ def mutate_kernel_with_agent(
                     optimization_type=opt_type, description=description,
                     latency_us=0.0, speedup=0.0, status="failed", telemetry={},
                     code=code, verification_error=0.0, check_error=check_error, static=static,
-                    prompt_feedback=feedback
+                    prompt_feedback=feedback, **found
                 )
 
             speedup = round(problem.baseline_latency_us / new_lat, 2)
@@ -530,10 +541,11 @@ def mutate_kernel_with_agent(
                 status="elite" if speedup > parent.speedup else "success",
                 telemetry=telemetry,
                 code=code,
-                verification_error=1.4e-4,
+                verification_error=found["cpu_check"].get("rel_error") or 0.0,
                 static=static,
                 static_score=static.get("score"),
-                prompt_feedback=feedback
+                prompt_feedback=feedback,
+                **found
             )
         except Exception as e:
             agent_error = str(e)
@@ -564,10 +576,14 @@ def mutate_kernel_with_agent(
         telemetry=telemetry,
         code=mutated_code,
         verification_error=2.1e-4,
-        static=parent.static,  # only comment lines were added, so the compiled kernel is unchanged
-        static_score=parent.static_score,
+        static=parent.static,  # only comment lines were added, so the compiled kernel and every gate result
+        static_score=parent.static_score,  # are the parent's
         agent_error=agent_error,
-        prompt_feedback=feedback
+        prompt_feedback=feedback,
+        sanitizer_warnings=parent.sanitizer_warnings,
+        entries=parent.entries,
+        cpu_check=parent.cpu_check,
+        evaluator=parent.evaluator
     )
 
 def analyze_kernel(code: str, problem: BenchmarkProblem, hw: HardwareProfile):
@@ -575,18 +591,84 @@ def analyze_kernel(code: str, problem: BenchmarkProblem, hw: HardwareProfile):
     from static_perf import analyze
     return analyze(code, problem.id, hw.id, hw.shared_mem_per_sm_kb)
 
+@dataclass
+class Gates:
+    """Which checks every candidate goes through, cheapest first (docs/PLAN.md §5)."""
+    sanitize: str = "strict"  # strict: static policy errors reject; warn: recorded only; off
+    cpu_check: bool = True    # Triton interpreter on the CPU: DEVIATION and the dynamic anti-gaming audits
+    evaluator: bool = True    # B200 hard gates, tcgen05 format check and Petri-net prediction (b200 GEMMs)
+
+
+def run_gates(code: str, problem: BenchmarkProblem, hw: HardwareProfile, gates: Gates):
+    """(error or None, static metrics, findings) for one candidate.
+
+    Syntax, the static anti-gaming policy, the Triton compile and static score, the B200 evaluator,
+    then correctness and the dynamic audits on the CPU. The first failure stops the chain; what
+    the gates found goes on the variant either way (`findings` holds KernelVariant fields).
+    """
+    found: Dict[str, Any] = {"sanitizer_warnings": [], "entries": [], "cpu_check": {}, "evaluator": {}}
+    error = check_syntax(code)
+    if error:
+        return error, {}, found
+    if gates.sanitize != "off":
+        import sanitizer
+        policy = sanitizer.check(code, problem.id)
+        found["entries"], found["sanitizer_warnings"] = policy.entries, policy.warnings
+        if policy.errors:
+            if gates.sanitize == "strict":
+                return "sanitizer: " + "; ".join(policy.errors[:3]), {}, found
+            found["sanitizer_warnings"] = policy.errors + policy.warnings
+    error, static = analyze_kernel(code, problem, hw)
+    if error:
+        return error, static, found
+    if gates.evaluator and hw.id == "b200":
+        from evaluators.b200 import B200Evaluator, spec_from_static
+        from evaluators.b200.triton_adapter import GEMM_PROBLEMS
+        spec = spec_from_static(code, problem.id, static)
+        if spec is not None:
+            result = B200Evaluator().evaluate_candidate(spec)
+            found["evaluator"] = result
+            if not result["passed_validation"]:
+                return "B200 evaluator: " + result["error_reason"], static, found
+            if spec["format"] not in ("f16", "bf16", "tf32"):
+                # Narrowed operands: does B200's arithmetic on them still meet the tolerance?
+                from evaluators.b200.functional_tcgen05 import format_check
+                tolerance = GEMM_PROBLEMS[problem.id]
+                numerics = format_check(spec["format"], tolerance["rtol"], tolerance["atol"])
+                result["format_check"] = numerics
+                if numerics.get("ok") is False:
+                    return (f"B200 evaluator: {spec['format']} operands miss this problem's tolerance "
+                            f"(deviation {numerics['deviation']:.3g} in tcgen05 arithmetic)"), static, found
+    if gates.cpu_check:
+        import cpu_check
+        result = cpu_check.check_variant(code, problem.id, entries=found["entries"] or None)
+        found["cpu_check"] = {k: result[k] for k in ("status", "rel_error", "entry", "error", "audit") if k in result}
+        if result["status"] in ("failed", "needs-cuda"):
+            return "cpu check: " + result.get("error", result["status"]), static, found
+    return None, static, found
+
+
+def predicted_us(variant: KernelVariant) -> Optional[float]:
+    return ((variant.evaluator or {}).get("metrics") or {}).get("predicted_latency_us")
+
+
 def is_better(candidate: KernelVariant, elite: KernelVariant) -> bool:
     """Elite selection. A real timing beats the proxy: once the elite has one, only a candidate
     that was also timed and came out faster can take its place, so an unbenchmarked generation
     can never replace a measured elite with an unmeasured one. Without timings it is the static
-    score, or the model's claimed speedup if Triton is unavailable."""
+    score, with the B200 evaluator's predicted latency breaking ties (8 of 14 measured GB10 GEMMs
+    tie at 100, and the Petri net is uncalibrated, so it ranks no higher than that), or the
+    model's claimed speedup if Triton is unavailable."""
     if candidate.bench_status not in ("", "ok"):
         return False  # the GPU harness rejected it: wrong result, crash or timeout
     if elite.measured_latency_us is not None:
         return (candidate.measured_latency_us is not None
                 and candidate.measured_latency_us < elite.measured_latency_us)
     if candidate.static_score is not None and elite.static_score is not None:
-        return candidate.static_score > elite.static_score
+        if candidate.static_score != elite.static_score:
+            return candidate.static_score > elite.static_score
+        mine, theirs = predicted_us(candidate), predicted_us(elite)
+        return mine is not None and theirs is not None and mine < theirs
     return candidate.speedup > elite.speedup
 
 
@@ -594,7 +676,7 @@ def bench_on_gpu(variant: KernelVariant, problem: BenchmarkProblem, baseline_us:
                  timeout_s: int) -> None:
     """Time `variant` on the local GPU and record the result on it. Never raises."""
     import gpu_bench
-    result = gpu_bench.bench_variant(variant.code, problem.id, timeout_s=timeout_s)
+    result = gpu_bench.bench_variant(variant.code, problem.id, timeout_s=timeout_s, entries=variant.entries or None)
     variant.bench_entry = result.get("entry")
     if result.get("ok"):
         variant.measured_latency_us = round(float(result["latency_us"]), 1)
@@ -608,10 +690,31 @@ def bench_on_gpu(variant: KernelVariant, problem: BenchmarkProblem, baseline_us:
 # 5. Main Evolutionary CLI Engine
 # ---------------------------------------------------------------------------
 
+def describe_gates(variant: KernelVariant) -> List[str]:
+    """One line per gate that left a finding on the variant, for the per-generation printout."""
+    lines = []
+    cpu = variant.cpu_check
+    if cpu.get("status") == "ok":
+        lines.append(f"CPU check : ok, deviation {cpu.get('rel_error') or 0:.2g} (entry {cpu.get('entry')}, Triton interpreter)")
+    elif cpu:
+        lines.append(f"CPU check : {cpu.get('status')}" + (f" — {cpu['error'][:110]}" if cpu.get("error") else ""))
+    metrics = (variant.evaluator or {}).get("metrics") or {}
+    if metrics.get("predicted_latency_us") is not None:
+        lines.append(f"B200 model: {metrics['predicted_latency_us']} μs, {metrics['achieved_tflops']} TFLOPS, tensor core "
+                     f"idle {metrics['bubble_ratio']:.0%}, {metrics['bottleneck'].lower()} (Petri net, uncalibrated)")
+    if variant.sanitizer_warnings:
+        lines.append("Sanitizer : " + "; ".join(variant.sanitizer_warnings[:2]))
+    if variant.kernelwiki_page:
+        lines.append(f"KernelWiki: {variant.kernelwiki_page} was in the prompt (explore)")
+    return lines
+
+
 def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, steer_prompt: str = "", model: str = "",
                            web_seed: bool = False, refresh_seed: bool = False, feedback_memory: str = "local",
                            provider_id: str = "", gpu_bench_every: int = 0,
-                           gpu_bench_timeout: int = 300):
+                           gpu_bench_timeout: int = 300, gates: Optional[Gates] = None, kernelwiki: str = "",
+                           stagnation_threshold: int = 3):
+    gates = gates or Gates()
     provider, provider_note = resolve_provider(provider_id)
     model = model or (provider_model(provider) if provider else "")
     hw = HARDWARE_CATALOG.get(hardware_id, HARDWARE_CATALOG["b200"])
@@ -642,6 +745,18 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
             print(f"  GPU Benchmark   : every {gpu_bench_every} generation(s), {gpu_bench_timeout}s timeout")
     if steer_prompt:
         print(f"  Steering Prompt : \"{steer_prompt}\"")
+    evaluator_note = "on" if gates.evaluator and hw.id == "b200" else "off (B200 only)" if gates.evaluator else "off"
+    print(f"  Gates           : sanitizer {gates.sanitize}, CPU check {'on' if gates.cpu_check else 'off'}, "
+          f"B200 evaluator {evaluator_note}")
+    wiki = None
+    if kernelwiki != "off":
+        from knowledge import KernelWiki
+        wiki = KernelWiki(kernelwiki) if kernelwiki else KernelWiki()
+        if wiki.available:
+            print(f"  KernelWiki      : after {stagnation_threshold} generation(s) without a new elite ({wiki.root})")
+        else:
+            print(f"  KernelWiki      : not found at {wiki.root} (git submodule update --init); explore disabled")
+            wiki = None
     print("="*75 + "\n")
 
     # Initialize Generation 0 Root Seed
@@ -662,7 +777,11 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
     )
 
     from static_perf import summarize
-    seed_error, root_variant.static = analyze_kernel(root_variant.code, problem, hw)
+    # The seed goes through the same gates, so its prediction and CPU check are on record; a seed
+    # that fails one is still the baseline
+    seed_error, root_variant.static, found = run_gates(root_variant.code, problem, hw, gates)
+    for key, value in found.items():
+        setattr(root_variant, key, value)
     root_variant.static_score = root_variant.static.get("score")
 
     lineage: List[KernelVariant] = [root_variant]
@@ -689,9 +808,11 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
 
     print(f"[*] [Gen 0] Baseline Seed: {root_variant.name} | Reference latency: {root_variant.latency_us} μs (problem table)")
     if seed_error:
-        print(f"    └─ [!] Seed failed static analysis: {seed_error}")
-    else:
+        print(f"    └─ [!] Seed failed a check: {seed_error}")
+    if root_variant.static:
         print(f"    └─ Static: {summarize(root_variant.static)}")
+    for line in describe_gates(root_variant):
+        print(f"    └─ {line}")
     measured_baseline_us = None
     if gpu_bench_every:
         bench_on_gpu(root_variant, problem, None, gpu_bench_timeout)
@@ -706,6 +827,8 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
         feedback.observe_seed(root_variant)
     print()
 
+    stalled = 0           # generations since the last new elite
+    tried_pages = set()   # KernelWiki techniques already put in a prompt this run
     for gen in range(1, generations + 1):
         print(f"[>] Evolving Generation {gen}/{generations} via Agentic Variation Operator...")
         time.sleep(0.4) # visual pacing
@@ -714,6 +837,21 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
         if prompt_feedback:
             n_rules = sum(1 for line in prompt_feedback.splitlines() if line.startswith("- "))
             print(f"    [feedback] {n_rules} check-derived instruction(s) added to the prompt")
+        operator, page = "mutate", None
+        if wiki is not None and stalled >= stagnation_threshold:
+            # Stagnation: the elite's measured symptoms pick a KernelWiki technique for this prompt
+            from knowledge import symptoms_for
+            found = symptoms_for(current_elite.static, current_elite.evaluator, gemm=problem.id in GEMM_PROBLEMS)
+            picked = wiki.prompt_block(found, tried_pages)
+            if picked:
+                page, block = picked
+                tried_pages.add(page)
+                operator = "explore"
+                prompt_feedback = (prompt_feedback + "\n\n" if prompt_feedback else "") + block + (
+                    f"\nThe search has not improved for {stalled} generations: explore this technique rather than "
+                    "retuning the same constants.")
+                print(f"    [explore] {stalled} generation(s) without a new elite; symptom "
+                      f"`{found[0][0]}` -> KernelWiki {page}")
         parent = current_elite
         new_variant = mutate_kernel_with_agent(
             problem=problem,
@@ -723,13 +861,18 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
             user_guidance=steer_prompt,
             model=model,
             feedback=prompt_feedback,
-            provider=provider
+            provider=provider,
+            gates=gates
         )
+        new_variant.operator, new_variant.kernelwiki_page = operator, page
         lineage.append(new_variant)
         if new_variant.status == "failed":
+            stalled += 1
             print(f"    ├─ [✗ FAILED] {new_variant.name} ({new_variant.optimization_type})")
             print(f"    │  Rationale : {new_variant.description}")
             print(f"    │  Check     : {new_variant.check_error}")
+            for line in describe_gates(new_variant):
+                print(f"    │  {line}")
             print(f"    │  Elite kept: {current_elite.name}\n")
             feedback.observe(new_variant, parent)
             continue
@@ -743,14 +886,18 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
             current_elite = new_variant
             new_variant.status = "elite"
             badge = "★ NEW ELITE"
+            stalled = 0
         else:
             new_variant.status = "success"
-            badge = "✓ COMPILES, NOT BETTER"
+            badge = "✓ PASSES CHECKS, NOT BETTER"
+            stalled += 1
         feedback.observe(new_variant, parent)
 
         print(f"    ├─ [{badge}] {new_variant.name} ({new_variant.optimization_type})")
         print(f"    │  Rationale : {new_variant.description}")
         print(f"    │  Static    : {summarize(new_variant.static)}")
+        for line in describe_gates(new_variant):
+            print(f"    │  {line}")
         print(f"    │  Claimed   : {new_variant.latency_us} μs / {new_variant.speedup}x (model estimate, not measured)")
         if new_variant.bench_status == "ok":
             speedup = f" / {new_variant.measured_speedup}x vs baseline" if new_variant.measured_speedup else ""
@@ -775,7 +922,12 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
             print(f"  Measured      : {current_elite.measured_latency_us} μs on {hw.name}{speedup}")
         wrong = sum(1 for v in lineage if v.bench_status not in ("", "ok"))
         print(f"  GPU Runs      : {len(benched)} timed, {wrong} rejected by the GPU harness")
-    print(f"  Failed Checks : {num_failed}/{generations} generations rejected (syntax / Triton compile)")
+    print(f"  Failed Checks : {num_failed}/{generations} generations rejected")
+    by_gate = {"sanitizer": "sanitizer", "B200 evaluator": "B200 evaluator", "cpu check": "CPU check"}
+    counts = {label: sum(1 for v in lineage[1:] if (v.check_error or "").startswith(prefix))
+              for prefix, label in by_gate.items()}
+    print(f"  Gate Rejects  : " + ", ".join(f"{label} {n}" for label, n in counts.items())
+          + f"; explore generations {sum(v.operator == 'explore' for v in lineage)}")
     print("="*75)
 
     # Save summary report
@@ -794,7 +946,12 @@ def run_evolution_pipeline(problem_id: str, hardware_id: str, generations: int, 
     # Export Turnkey Python Submission Script
     submission_filename = f"submission_{problem.id}_{current_elite.name}.py"
     with open(submission_filename, "w") as f:
-        f.write(f'"""\nGPU MODE Leaderboard Submission: {problem.name}\nTarget: {hw.name} ({hw.architecture})\nStatic score: {current_elite.static_score}/100 (GPU-less proxy; not benchmarked)\n"""\n\n')
+        cpu = current_elite.cpu_check
+        cpu_note = (f"ok on small inputs (deviation {cpu.get('rel_error') or 0:.2g}, Triton interpreter)"
+                    if cpu.get("status") == "ok" else cpu.get("status", "not run"))
+        f.write(f'"""\nGPU MODE Leaderboard Submission: {problem.name}\nTarget: {hw.name} ({hw.architecture})\n'
+                f'Static score: {current_elite.static_score}/100 (GPU-less proxy; not benchmarked)\n'
+                f'CPU check: {cpu_note}\n"""\n\n')
         f.write(current_elite.code)
     print(f"[+] Exported benchmark submission script to: {submission_filename}\n")
 
@@ -823,6 +980,18 @@ if __name__ == "__main__":
                         help="Where lessons and GPU measurements are kept: this run only (local), "
                              "a JSONL file next to the script (file), or RawTree (rawtree)")
     parser.add_argument("--steer", type=str, default="", help="Natural language steering prompt for kernel mutations")
+    parser.add_argument("--sanitize", choices=["strict", "warn", "off"], default="strict",
+                        help="Static anti-gaming policy: reject (strict), only record (warn), or skip (off)")
+    parser.add_argument("--cpu-check", choices=["on", "off"], default="on",
+                        help="Run every candidate on the CPU through the Triton interpreter: correctness "
+                             "(DEVIATION) and the dynamic anti-gaming audits")
+    parser.add_argument("--evaluator", choices=["auto", "off"], default="auto",
+                        help="B200 evaluator (hard gates, tcgen05 format check, Petri-net prediction); "
+                             "auto runs it for --hardware b200 GEMMs")
+    parser.add_argument("--kernelwiki", type=str, default="", metavar="PATH|off",
+                        help="KernelWiki checkout for explore generations (default: external/KernelWiki)")
+    parser.add_argument("--stagnation-threshold", type=int, default=3, metavar="N",
+                        help="Generations without a new elite before a KernelWiki technique joins the prompt")
 
     args = parser.parse_args()
     if args.list_models is not None:
@@ -841,4 +1010,7 @@ if __name__ == "__main__":
         sys.exit(0)
     run_evolution_pipeline(args.problem, args.hardware, args.generations, args.steer, args.model,
                            args.web_seed, args.refresh_seed, args.feedback_memory, args.provider,
-                           args.gpu_bench_every, args.gpu_bench_timeout)
+                           args.gpu_bench_every, args.gpu_bench_timeout,
+                           gates=Gates(sanitize=args.sanitize, cpu_check=args.cpu_check == "on",
+                                       evaluator=args.evaluator == "auto"),
+                           kernelwiki=args.kernelwiki, stagnation_threshold=args.stagnation_threshold)

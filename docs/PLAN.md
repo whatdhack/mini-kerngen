@@ -11,8 +11,20 @@ Feasibility probes ran in mini-avo-liquid's `.venv` (torch 2.14.1+cpu, Triton 3.
 
 Section 2 lists where the notes and the code disagree. The design in sections 5–6 follows the code.
 
-**Status (2026-10-17):** Phase 0 started. The repo exists, and Crusoe Intelligence Foundry is the default provider
-(§3, §6.7).
+**Status (2026-10-17).**
+
+- **Phase 0:** the repo exists, and Crusoe Intelligence Foundry is the default provider (§3, §6.7). Still open: the
+  split of `run_evolution.py`, CI, and the golden test.
+- **Implemented and tested on CPU:**
+  - the anti-gaming sanitizer and the CPU correctness check, with the sandbox (Phase 1);
+  - KernelWiki retrieval, triggered by a stagnation counter (Phase 3);
+  - the B200 evaluator: tcgen05 Tier 1, the timed Petri net and the hard gates (Phase 4), uncalibrated, so it only
+    breaks ties between equal static scores.
+- **Not yet:**
+  - the rest of Phase 2: the deterministic exploit sweep, config-hash dedupe, and `ITERATIONS.md`;
+  - the meta-reflector (Phase 6);
+  - calibration (Phase 7);
+  - a GPU run of the hardened harness.
 
 ## 1. Scope
 
@@ -171,6 +183,9 @@ poison-cell test for outputs the wrapper allocates.
 The interpreter models neither tensor-core rounding, nor races, nor time. tcgen05_model and the GPU run cover those.
 
 ### 2.6 Holes in mini-avo-liquid's `gpu_bench.py`
+
+All four are closed in mini-kerngen's shared harness (`harness.py`, `sandbox.py`, `sanitizer/`) and covered by
+CPU tests; see `sanitizer/TRAPS.md`.
 
 1. The candidate is imported before `make_inputs()` and `reference()` run, in the same interpreter. Import-time code
    can replace `torch.allclose`, `triton.testing.do_bench` or `torch.linalg.cholesky_ex` and pass anything.

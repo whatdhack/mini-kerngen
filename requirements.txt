@@ -1,5 +1,7 @@
 openai>=1.0
 triton>=3.6        # GPU-less compile check + static score (no GPU needed)
-torch>=2.11        # optional: only imported by kernels' host wrappers, never run here
+torch>=2.11        # the CPU check and GPU harness run candidates with it; the CPU wheel is enough without a GPU
 pillow             # optional: only for assets/make_demo_gif.py
 pytest             # tests (CPU only)
+# B200 evaluator, Tier 1: bit-exact tcgen05 arithmetic (pure Python, no GPU); pinned to a reviewed commit
+tcgen05-model @ git+https://github.com/sf-tensor/tcgen05@d96b821

@@ -2,28 +2,31 @@
 
 **Evolutionary search for Triton kernels with an LLM: compile-checked without a GPU, timed on one when there is one.**
 
-![mini-kerngen loop, drawn top to bottom. The prompt is built from the parent kernel, the feedback memory and, once the search stalls, a KernelWiki technique page. Each generation one LLM call (DeepSeek or Nemotron on Crusoe) produces a candidate. Candidates then pass down through rows: Python syntax, ahead-of-time Triton compile, the anti-gaming sanitizer, the model + analytical heuristic evaluator, and every Nth generation a real GPU run. The best loops back up to become the next parent, and what the checks found becomes instructions in the next prompt. A final frame shows the stagnation counter selecting a KernelWiki page after three generations without improvement. Planned parts (sanitizer, evaluator beyond the static score, KernelWiki, stagnation counter) are drawn in purple](assets/demo.gif)
+![mini-kerngen loop, drawn top to bottom. The prompt is built from the parent kernel, the feedback memory and, once the search stalls, a KernelWiki technique page. Each generation one LLM call (DeepSeek or Nemotron on Crusoe) produces a candidate. Candidates then pass down through rows: Python syntax, ahead-of-time Triton compile, the anti-gaming sanitizer, the model + analytical heuristic evaluator, and every Nth generation a real GPU run. The best loops back up to become the next parent, and what the checks found becomes instructions in the next prompt. A final frame shows the stagnation counter selecting a KernelWiki page after three generations without improvement. The parts mini-kerngen adds (sanitizer, evaluator, KernelWiki, stagnation counter) are drawn in purple](assets/demo.gif)
 
-The evolution loop described below works today, with [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html) as the
-default model provider. Its default model is `deepseek-ai/Deepseek-V4-Flash`; an
+The evolution loop described below runs with [Crusoe Intelligence Foundry](https://docs.crusoecloud.com/serverless-inference/index.html)
+as the default model provider. Its default model is `deepseek-ai/Deepseek-V4-Flash`; an
 [NVIDIA Nemotron](https://developer.nvidia.com/nemotron) model such as `nvidia/Nemotron-3.5-Lightning-30B-A3B` can be
-selected with `--model`. Three components from the [plan](docs/PLAN.md) are being added, each drawn in purple in the
-animation and each built on published work (see [References](#references)):
+selected with `--model`. Every candidate passes three components, each drawn in purple in the animation and each
+built on published work (see [References](#references)):
 
-- **Anti-Gaming Sanitizer.** Static and dynamic checks against reward hacking, after
+- **Anti-Gaming Sanitizer** (`sanitizer/`, `harness.py`). Static and dynamic checks against reward hacking, after
   [AKO4X](https://github.com/TongmingLAIC/AKO4X):
   - its varying-input cheat check, which grew out of
     [flashinfer-bench #413](https://github.com/flashinfer-ai/flashinfer-bench/pull/413);
   - poison-cell tests;
   - its rule that the operator must not be delegated to a library.
-- **Model + Analytical Heuristic Evaluator.** Three checks that need no GPU:
+
+  [sanitizer/TRAPS.md](sanitizer/TRAPS.md) lists what is caught, and by which check.
+- **Model + Analytical Heuristic Evaluator** (`cpu_check.py`, `evaluators/b200/`). Three checks that need no GPU:
   - correctness on the CPU through the Triton interpreter;
   - B200-exact numerics for narrow formats from [tcgen05-model](https://github.com/sf-tensor/tcgen05);
   - a timed [Petri net](https://doi.org/10.1109/5.24143) of the TMA → `tcgen05.mma` → epilogue pipeline, following
     [CUTLASS's pipeline semantics](https://github.com/NVIDIA/cutlass/blob/main/media/docs/cpp/pipeline.md), which
     predicts stalls and latency.
-- **[KernelWiki](https://github.com/mit-han-lab/KernelWiki).** Optimization techniques chosen by the kernel's
-  symptoms, added to the prompt once the search stalls.
+- **[KernelWiki](https://github.com/mit-han-lab/KernelWiki)** (`knowledge/`). After `--stagnation-threshold`
+  generations without a new elite, the elite's measured symptoms select a technique page, and that page goes into
+  the generation's one LLM call.
 
 ## Status
 
@@ -31,18 +34,17 @@ animation and each built on published work (see [References](#references)):
 |---|---|
 | Evolution loop: one LLM call per generation, GPU-less Triton compile, static score, optional GPU timing, feedback memory | Working |
 | Crusoe Intelligence Foundry as the default provider: `deepseek-ai/Deepseek-V4-Flash` by default, NVIDIA Nemotron with `--model` | Working; model IDs checked against Crusoe's live catalog, tests against a fake client, no generations run yet |
-| Anti-Gaming Sanitizer (after AKO4X) | Planned (Phase 1) |
-| Model + Analytical Heuristic Evaluator, part 1: CPU correctness through the Triton interpreter | Planned (Phase 1) |
-| Stagnation-driven exploit/explore; per-run `ITERATIONS.md` trajectory | Planned (Phase 2) |
-| KernelWiki retrieval (the submodule is already in `external/KernelWiki`) | Planned (Phase 3) |
-| Model + Analytical Heuristic Evaluator, part 2: tcgen05-model numerics and a timed Petri net for B200 | Planned (Phase 4) |
+| Anti-Gaming Sanitizer: static policy, plus dynamic audits in a sandbox with no network or keys | Working; tested on CPU with cheating fixtures. The GPU harness runs the same audits, not yet tested on a GPU |
+| Model + Analytical Heuristic Evaluator, part 1: every candidate run on the CPU through the Triton interpreter (DEVIATION) | Working; 2–7 s per candidate |
+| Model + Analytical Heuristic Evaluator, part 2: B200 hard gates, tcgen05-model format check, timed Petri net | Working, for `--hardware b200` GEMMs. The Petri net is uncalibrated, so it only breaks ties between equal static scores |
+| KernelWiki retrieval and a stagnation counter that triggers it | Working |
+| Deterministic sweep of launch constants (exploit), duplicate detection, per-run `ITERATIONS.md` | Planned (Phase 2) |
 | A reflector that writes winning patterns back as KernelWiki pages | Planned (Phase 6) |
+| Calibrating the Petri net against measured kernels | Planned (Phase 7; needs GPU data) |
 
-[docs/PLAN.md](docs/PLAN.md) has the design and the order of the phases. It also records:
-
-- where the original design notes disagree with the projects they build on: B200 constants, KernelWiki's page
-  schema, and the tcgen05 model's API;
-- the reward-hacking gaps in today's GPU harness, which Phase 1 closes.
+[docs/PLAN.md](docs/PLAN.md) has the design and the order of the phases. It also records where the original design
+notes disagree with the projects they build on: B200 constants, KernelWiki's page schema, and the tcgen05 model's
+API.
 
 ## What it does
 
@@ -57,12 +59,17 @@ mini-kerngen runs an evolutionary loop over GPU kernels for
    Foundry by default. Crusoe also serves NVIDIA Nemotron: `--model nvidia/Nemotron-3.5-Lightning-30B-A3B`, or
    `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B` for a larger model. Other providers are `liquid/lfm-2.5-2.6b:free` on
    OpenRouter (`--provider openrouter`) and `glm-5.3` on Vultr Serverless Inference (`--provider vultr`).
-3. **Check.** Each candidate must parse as Python and compile as Triton for the target GPU.
-4. **Score.** Candidates that compile get a static performance score. Every Nth generation,
-   the candidate is also run on a real GPU (`--gpu-bench-every N`): checked against a torch
-   reference, then timed.
+   After `--stagnation-threshold` generations without a new elite, a KernelWiki technique page chosen by the
+   elite's measured symptoms joins that one prompt.
+3. **Check.** Each candidate must parse as Python, pass the anti-gaming policy, compile as Triton
+   for the target GPU, pass the B200 evaluator's hard gates (on `--hardware b200`), and produce the
+   right result on the CPU through the Triton interpreter, while surviving the dynamic audits.
+4. **Score.** Candidates that pass get a static performance score and, for B200 GEMMs, a Petri-net
+   latency prediction. Every Nth generation, the candidate is also run on a real GPU
+   (`--gpu-bench-every N`): checked against a torch reference with the same audits, then timed.
 5. **Select.** A candidate becomes the new parent only if it scores strictly higher than the
-   current one — or, once there is a real timing, only if it was timed too and ran faster.
+   current one, or ties and is predicted to be faster. Once there is a real timing, it must have
+   been timed too and have run faster.
 6. **Feed back.** What the checks, the static analysis and any real GPU run found becomes
    instructions in the next generation's prompt. These are kept for the current run, or across
    runs in a local JSONL file (`--feedback-memory file`) or RawTree (`--feedback-memory rawtree`).
@@ -74,19 +81,23 @@ failed) and a submission script containing the best kernel.
 
 ### How kernels are judged
 
-The search needs no GPU. Every candidate is compiled for the target architecture and judged by
-what the compiler produces — that alone catches most of what a model gets wrong, and it works on
-a laptop. It cannot tell you whether a kernel is *fast*, or whether it computes the right answer.
-When there is a GPU on the machine, `--gpu-bench-every N` adds both, and the measured time then
-outranks the score.
+The search needs no GPU. Every candidate is checked against an anti-gaming policy, compiled for
+the target architecture and judged by what the compiler produces, then run on the CPU through
+the Triton interpreter at small shapes. That catches most of what a model gets wrong, including
+wrong answers, and it works on a laptop. It cannot tell you whether a kernel is *fast*: the B200
+Petri net predicts that but is uncalibrated. When there is a GPU on the machine,
+`--gpu-bench-every N` adds a real timing, which then outranks every proxy.
 
 | Stage | What it catches | How |
 |---|---|---|
 | **Syntax** | Code that isn't valid Python (e.g. C-style `0.0f`) | `ast.parse` |
+| **Sanitizer** | Library delegation (`torch.matmul`, `x.sum()` on the inputs), kernels never launched, monkeypatching, imports and calls a kernel has no use for | `sanitizer/static_policy.py`, before compile (`--sanitize`) |
 | **Triton compile** | Made-up `tl.*` functions, type and shape errors, bad `constexpr` use | `triton.compile` ahead of time for sm_80 / sm_89 / sm_90 / sm_100 / sm_121 (`triton_check.py`) |
 | **Launch limits** | Kernels whose shared memory or registers can't fit on an SM | Per-SM limits of the target GPU |
 | **Static score** (0–100) | How well the compiled kernel uses the hardware | `static_perf.py`, from the PTX, cubin and compile metadata |
-| **GPU run** (optional) | Kernels that compile and score well but compute the wrong thing, hang or crash | `gpu_bench.py`, a separate interpreter with a timeout (`--gpu-bench-every N`) |
+| **B200 evaluator** (b200 GEMMs) | More than 227 KB of shared memory or 512 TMEM columns, K tiles the tensor core cannot step through, narrowed formats that miss the tolerance; predicts latency and the bottleneck | `evaluators/b200/`: hard gates, tcgen05-model format check, timed Petri net (`--evaluator`) |
+| **CPU check** | Wrong results, unwritten output, hardcoded strides, cached results, tampering with torch | `cpu_check.py`: the Triton interpreter at small shapes, with the dynamic audits in `harness.py` (`--cpu-check`) |
+| **GPU run** (optional) | Kernels that pass on the CPU but are wrong, hang or crash on the GPU, and their real speed | `gpu_bench.py`: the same harness at full size, then `do_bench` (`--gpu-bench-every N`) |
 
 The static score combines:
 
@@ -127,27 +138,33 @@ then a name-based guess. Without this the wrapper is never run, every variant co
 
 The score is a **proxy**. It reliably flags bad kernels: spills, launch failures, missing tensor
 cores, scalar loads, low occupancy. It cannot rank two well-tuned kernels against each other, and
-it cannot tell whether a kernel computes the right answer — a 100/100 GEMM candidate with TMA and
-warp specialization turned out to be off by 2.4x the peak value when it was actually run. For both
-of those, use `--gpu-bench-every N`. The model's own latency estimate is shown as "Claimed" and
-never used for selection.
+it cannot tell whether a kernel computes the right answer. A 100/100 GEMM candidate with TMA and
+warp specialization turned out to be off by 2.4x the peak value when it was actually run; the CPU
+check now catches that kind of error before any GPU time is spent. Between candidates with the same
+static score, the B200 evaluator's predicted latency decides. To rank on real speed, use
+`--gpu-bench-every N`. The model's own latency estimate is shown as "Claimed" and never used for
+selection.
 
 ### Running candidates on a real GPU
 
 `--gpu-bench-every N` runs generation N, 2N, … on the local GPU, and the seed once at the start:
 
-- **Inputs and reference** come from a per-problem harness in `gpu_bench.py`. `vectorsum_v2` and
-  `matmul_v2` and `cholesky` have one; `trimul_alphafold3` does not, because its seed is a stub
-  with no defined semantics, and the flag is ignored for it.
+- **Inputs and reference** come from a per-problem harness in `harness.py`, shared with the CPU
+  check. `vectorsum_v2` and `matmul_v2` and `cholesky` have one; `trimul_alphafold3` does not,
+  because its seed is a stub with no defined semantics, and the flag is ignored for it.
 - **Extra cases**: a harness may list further inputs that are checked but not timed, because a
   kernel tuned against one shape can be wrong on every other one. Both winners so far failed
   here — the GEMM one hardcoded row-major strides and returns garbage for a transposed operand,
   the Cholesky one misses the reconstruction gate at n=128 while passing at n=256.
 - **Entry point**: the harness calls the wrapper the mutation prompt asks for — `solve(x)` for
   `vectorsum_v2`, `solve(a, b)` for `matmul_v2`, `custom_kernel(A)` for `cholesky`, matching the
-  upstream GPU MODE task — and falls back to other top-level functions
-  (`run`, `launch`, anything else that is not a `@triton.jit` kernel), trying `fn(*inputs)` and
-  `fn(*inputs, out)`. The first one that reproduces the reference result is used.
+  upstream GPU MODE task — and falls back to the other public functions the sanitizer found to
+  launch a `@triton.jit` kernel, trying `fn(*inputs)` and `fn(*inputs, out)`. The first one that
+  reproduces the reference result is used.
+- **Audits**, the same as on the CPU: references are computed before the candidate is imported, the
+  functions the comparison relies on are fingerprinted, fresh outputs start as NaN, and after the
+  first correct call the inputs change in place and the output has to follow. Timing is then
+  compared with a synchronized wall-clock time, and one more changed input is checked after it.
 - **Timing** is the median of `triton.testing.do_bench`, reported as "Measured" alongside the
   speedup over the seed's own measured latency (not the problem table's `baseline_latency_us`,
   which describes a different GPU).
@@ -162,16 +179,15 @@ never used for selection.
 
 **Safety:** kernels are model output. The compile path never executes their top-level code —
 only trusted imports, function definitions and literal constants are loaded before compiling.
-The GPU path does execute them, which is the point of it, so every run is a separate interpreter
-with a wall-clock timeout.
+The CPU check and the GPU run do execute them, which is the point, so every run is a separate
+interpreter with a wall-clock timeout and no API keys in its environment (`sandbox.py`). The CPU
+check also runs without network access.
 
-**Known gaps:** the GPU harness can still be gamed, and Phase 1 of the [plan](docs/PLAN.md) (§2.6) closes these:
+**Known gaps:** [sanitizer/TRAPS.md](sanitizer/TRAPS.md) lists what is caught, and by which check.
+Two things are not covered yet:
 
-- The candidate is imported before the reference is computed, so its import-time code could replace
-  `torch.allclose` or `do_bench`.
-- A result cached by input pointer would time at about 0 µs.
-- A wrapper could return `torch.matmul(a, b)` next to a kernel it never launches.
-- The subprocess also inherits the parent's environment, API keys included.
+- A cache keyed on input *contents* still passes, and is timed warm.
+- The audits in the GPU harness are the ones tested on the CPU, but they have not yet run on a GPU.
 
 #### Remembering measurements across runs
 
@@ -367,38 +383,57 @@ compile check targets the same architecture it will run on.
 | `--gpu-bench-every` | run generation N, 2N, … on a real GPU (`0` disables); env `GPU_BENCH_EVERY` | `0` |
 | `--gpu-bench-timeout` | seconds one GPU benchmark subprocess may take | `300` |
 | `--feedback-memory` | `local` (this run only), `file` (JSONL next to the script) or `rawtree` | `local` |
+| `--sanitize` | `strict` (policy errors reject), `warn` (recorded only), `off` | `strict` |
+| `--cpu-check` | `on`, `off`: run every candidate through the Triton interpreter on the CPU | `on` |
+| `--evaluator` | `auto` (B200 gates, format check and Petri net for `--hardware b200` GEMMs), `off` | `auto` |
+| `--kernelwiki` | path to a KernelWiki checkout, or `off` | `external/KernelWiki` |
+| `--stagnation-threshold` | generations without a new elite before a KernelWiki technique joins the prompt | `3` |
 
 ### 4. Read the output
 
 Each generation prints one of three outcomes:
 
-- **`★ NEW ELITE`**: the candidate compiled and scored higher than the parent.
-- **`✓ COMPILES, NOT BETTER`**: the candidate compiled but didn't beat the parent.
-- **`✗ FAILED`**: the candidate failed a check. The Python or Triton error is shown, with the
-  failing source line and the argument types that were guessed.
+- **`★ NEW ELITE`**: the candidate passed every check and beat the parent.
+- **`✓ PASSES CHECKS, NOT BETTER`**: the candidate passed every check but didn't beat the parent.
+- **`✗ FAILED`**: the candidate failed a check: syntax, sanitizer, Triton compile, B200 evaluator or
+  CPU check. The reason is shown, and becomes a rule in the next prompt.
+
+Under each candidate, one line per check shows what it found: the CPU check's deviation, the B200
+model's prediction and bottleneck, sanitizer warnings, and the KernelWiki page when the generation
+explored one.
 
 Files written to the current directory:
 
 - `evolution_result_<problem>_<hw>.json`: the full lineage. Each entry has its code, status,
-  `check_error`, `static` metrics and `static_score`, and the seed's source URL is included.
-- `submission_<problem>_<variant>.py`: the best kernel. Without `--gpu-bench-every` it is **not
-  benchmarked and not checked for correctness**, so run it on a real GPU before submitting it
-  anywhere. With it, the lineage also carries `measured_latency_us`, `measured_speedup` and
-  `bench_status` per candidate.
+  `check_error`, `static` metrics and `static_score`, `cpu_check`, `evaluator`, `sanitizer_warnings`,
+  `operator` (`mutate` or `explore`) and `kernelwiki_page`, and the seed's source URL is included.
+- `submission_<problem>_<variant>.py`: the best kernel. The CPU check covers small inputs only, so
+  without `--gpu-bench-every` it is **not benchmarked and not checked at full size on a GPU**: run it
+  on a real GPU before submitting it anywhere. With it, the lineage also carries
+  `measured_latency_us`, `measured_speedup` and `bench_status` per candidate.
 
 ### 5. Tests
 
 ```bash
-pytest     # CPU only; no API keys or network needed
+pytest     # CPU only, about a minute; no API keys or network needed
 ```
+
+The tcgen05 tests are skipped when `tcgen05-model` is not installed; the KernelWiki tests need the
+submodule (`git submodule update --init`).
 
 ## Repository layout
 
 | Path | Purpose |
 |---|---|
-| `run_evolution.py` | CLI and evolution loop, provider registry (Crusoe, OpenRouter, Vultr), problem and hardware catalog |
+| `run_evolution.py` | CLI and evolution loop with the gate chain and stagnation counter, provider registry (Crusoe, OpenRouter, Vultr), problem and hardware catalog |
+| `sanitizer/` | Static anti-gaming policy, and `TRAPS.md`, the catalog of what is caught |
+| `harness.py` | Per-problem inputs and references, and the runner with the dynamic audits, shared by the CPU check and the GPU run |
+| `sandbox.py` | Runs model-written code in its own interpreter: timeout, no secrets, no network |
+| `cpu_check.py` | Every candidate through the Triton interpreter at small shapes: DEVIATION and audits |
+| `evaluators/b200/` | B200 constants, tcgen05 functional check, timed Petri net, evaluator API, Triton adapter |
+| `knowledge/` | KernelWiki retrieval and the mapping from measurements to its symptoms |
 | `triton_check.py` | Safe loading plus ahead-of-time Triton compile for the target GPU |
-| `gpu_bench.py` | Optional real-GPU correctness check and timing, in a subprocess with a timeout |
+| `gpu_bench.py` | Optional real-GPU correctness check and timing, through `harness.py` |
 | `static_perf.py` | Static metrics (PTX / cubin / metadata) and the 0–100 score |
 | `feedback.py` | Turns check, static-analysis and GPU-run findings into instructions for the next prompt |
 | `local_store.py` | Feedback memory in a local JSONL file (`--feedback-memory file`) |
