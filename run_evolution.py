@@ -511,6 +511,9 @@ def mutate_kernel_with_agent(
             if opt_type not in OPTIMIZATION_TYPES:
                 opt_type = "tile_tuning"
             code = data.get("code") or parent.code
+            if "\n" not in code and "\\n" in code:
+                # Double-escaped JSON: the whole program arrived on one line with literal \n sequences
+                code = code.replace("\\n", "\n").replace("\\t", "\t").replace('\\"', '"')
             variant_id = f"var_gen_{generation_idx}_{int(time.time()*1000) % 10000}"
             variant_name = data.get("variantName", f"v{generation_idx}_agent_opt")
             description = data.get("description", "LLM-synthesized micro-architectural optimization")

@@ -207,8 +207,42 @@ def _launch_sites(code: str) -> Dict[str, Dict[str, Any]]:
                     constexprs[kw.arg] = value
             # Positional args line up with the kernel's parameters; unresolvable ones hold their slot
             positional = [_resolve_literal(a, envs, n.lineno)[1] for a in n.args]
-            sites[target.id] = {"constexprs": constexprs, "positional": positional, "options": options}
+            # Host-side TMA descriptors passed to the kernel, by position or keyword: their block shape
+            found = _descriptor_bindings(scope, envs)
+            descriptors = {i: found[a.id] for i, a in enumerate(n.args) if isinstance(a, ast.Name) and a.id in found}
+            descriptors.update({kw.arg: found[kw.value.id] for kw in n.keywords
+                                if kw.arg and isinstance(kw.value, ast.Name) and kw.value.id in found})
+            sites[target.id] = {"constexprs": constexprs, "positional": positional, "options": options,
+                                "descriptors": descriptors}
     return sites
+
+
+def _descriptor_bindings(scope: ast.AST, envs: List[List[Tuple[int, str, Any]]]) -> Dict[str, List[int]]:
+    """Names bound to a host-side TensorDescriptor in `scope`, with the block shape it was built with.
+
+    Covers TensorDescriptor.from_tensor(t, block_shape=[...]) and TensorDescriptor(t, shape, strides,
+    block_shape). A kernel parameter that receives one is typed tensordesc<dtype[block]>; guessing
+    it from its name (i32) makes desc.load() fail to compile although the kernel is valid.
+    """
+    out: Dict[str, List[int]] = {}
+    for node in _scope_nodes(scope):
+        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)):
+            continue
+        call = node.value
+        func = ast.unparse(call.func)
+        if not func.endswith(("TensorDescriptor.from_tensor", "TensorDescriptor")):
+            continue
+        block = next((kw.value for kw in call.keywords if kw.arg == "block_shape"), None)
+        if block is None:
+            index = 1 if func.endswith("from_tensor") else 3
+            block = call.args[index] if len(call.args) > index else None
+        if not isinstance(block, (ast.List, ast.Tuple)):
+            continue
+        dims = [_resolve_literal(e, envs, node.lineno) for e in block.elts]
+        if all(ok and isinstance(v, int) for ok, v in dims):
+            out[node.targets[0].id] = [v for _, v in dims]
+    return out
 
 
 def _guess_constexpr(name: str) -> Any:
@@ -238,6 +272,7 @@ def _guess_signature(kernel, ptr_dtype: str, autotune: Dict[str, Any], site: Opt
     site = site or {}
     launch_kwargs: Dict[str, Any] = site.get("constexprs", {})
     launch_positional: List[Any] = site.get("positional", [])
+    descriptors: Dict[Any, List[int]] = site.get("descriptors", {})
     sig: Dict[str, str] = {}
     constexprs: Dict[str, Any] = {}
     attrs: Dict[Tuple[int], List[List[Any]]] = {}
@@ -258,6 +293,9 @@ def _guess_signature(kernel, ptr_dtype: str, autotune: Dict[str, Any], site: Opt
                 constexprs[name] = autotune[name]
             else:
                 constexprs[name] = p.default if has_default else _guess_constexpr(name)
+        elif name in descriptors or i in descriptors:
+            block = descriptors.get(name) or descriptors[i]
+            sig[name] = f"tensordesc<{ptr_dtype}[{','.join(map(str, block))}]>"
         elif name in unit:
             # A real launch specializes integer arguments equal to 1 into constants
             sig[name] = "constexpr"

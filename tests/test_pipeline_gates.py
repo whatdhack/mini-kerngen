@@ -88,3 +88,20 @@ def test_harness_timing_branch_runs_on_cpu():
     result = harness.run((FIXTURES / "honest.py").read_text(), "matmul_v2", device="cpu", small=True, time_it=True,
                          timeout_s=120, extra_env={"TRITON_INTERPRET": "1"})
     assert result["ok"] and result["latency_us"] > 0, result
+
+
+def test_host_side_tma_descriptors_compile():
+    # A real model reply: TensorDescriptor.from_tensor in the wrapper, desc.load in the kernel. Typing the
+    # descriptor arguments by name (i32) rejected this valid kernel at compile time.
+    from static_perf import analyze
+    error, metrics = analyze((ROOT / "tests" / "fixtures" / "host_tma_descriptors.py").read_text(), "matmul_v2",
+                             "b200", 228)
+    assert error is None, error
+    assert metrics["tma"] and metrics["warp_specialized"] and metrics["tcgen05"]
+
+
+def test_tma_on_a_transposed_operand_gets_a_specific_lesson():
+    error, _, found = rev.run_gates((ROOT / "tests" / "fixtures" / "host_tma_descriptors.py").read_text(), MATMUL,
+                                    B200, rev.Gates())
+    assert error.startswith("cpu check: raised on transposed b") and found["cpu_check"]["rel_error"] < 1e-2
+    assert any(".contiguous()" in rule for rule in lessons_from_failure(error, None))

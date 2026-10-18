@@ -101,6 +101,14 @@ def _gate_lesson(check_error: str) -> Optional[str]:
     if "NaN" in detail:
         return ("Part of the output was never written (it read back as NaN). Make the grid and the store masks "
                 "cover every output element.")
+    if "16-byte aligned" in detail or "last dimension must be contiguous" in detail:
+        return ("A TMA descriptor was built on a non-contiguous operand (e.g. a transposed B), whose strides TMA "
+                "cannot use. Call .contiguous() on an operand whose last stride is not 1 before building its "
+                "descriptor, or fall back to pointer loads with its real strides.")
+    if detail.startswith("harness subprocess failed"):
+        return ("The kernel crashed the CPU run (" + detail[len("harness subprocess failed: "):][:80] + "), which in "
+                "the Triton interpreter usually means a load or store outside the tensors. Mask every load and store "
+                "at the edges and check the pointer offsets.")
     if detail.startswith(("wrong on", "raised on")):
         return (f"The kernel failed on another input shape ({detail[:170]}). Use the inputs' real strides and mask "
                 "the edges; do not assume contiguous inputs or sizes that are multiples of the block size.")
@@ -186,9 +194,11 @@ def opportunities(static: Dict[str, Any], gemm: bool, capability: int) -> List[s
                    "program or 4-8 warps.")
     if gemm:
         if capability >= 90 and not static.get("tma"):
-            ops.append("No TMA. Build device-side descriptors with tl.make_tensor_descriptor(ptr, shape=[M, K], "
-                       "strides=[K, 1], block_shape=[BLOCK_M, BLOCK_K]) and load tiles with desc.load([m, k]); "
-                       "the host wrapper must call triton.set_allocator(...).")
+            ops.append("No TMA. Build descriptors with tl.make_tensor_descriptor(ptr, shape=[M, K], "
+                       "strides=[stride_am, stride_ak], block_shape=[BLOCK_M, BLOCK_K]) from the operands' real "
+                       "strides, and load tiles with desc.load([m, k]); the host wrapper must call "
+                       "triton.set_allocator(...). TMA needs a last stride of 1, so call .contiguous() first on an "
+                       "operand that is not (a transposed B is checked).")
         if capability >= 90 and not static.get("warp_specialized"):
             ops.append("No warp specialization. Write the K loop as "
                        "`for k in tl.range(k_tiles, warp_specialize=True):` so producer warps overlap TMA "
