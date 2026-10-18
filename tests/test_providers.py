@@ -112,3 +112,12 @@ def test_empty_reply_on_last_variant_raises(fake):
     fake(completion(None), completion("  "))
     with pytest.raises(ValueError, match="empty completion"):
         rev.call_mutation_agent("p", "m", CRUSOE)
+
+
+def test_double_escaped_code_is_unescaped(fake, monkeypatch):
+    code = 'import torch\\nx = "μs"\\nprint(x)'
+    monkeypatch.setattr(rev, "call_mutation_agent", lambda prompt, model, spec: {"code": code})
+    seed = rev.KernelVariant("root", "v0", 0, None, "baseline", "", 1.0, 1.0, "success", {}, "pass", 0.0)
+    variant = rev.mutate_kernel_with_agent(rev.PROBLEMS["vectorsum_v2"], rev.HARDWARE_CATALOG["b200"], seed, 1,
+                                           provider=CRUSOE, gates=rev.Gates(sanitize="off", cpu_check=False))
+    assert variant.code == 'import torch\nx = "μs"\nprint(x)'
