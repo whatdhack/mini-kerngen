@@ -171,14 +171,14 @@ def _score(problem_id: str, capability: int, m: Dict[str, Any]) -> Dict[str, flo
     return {k: round(v, 1) for k, v in parts.items()}
 
 
-def _tile_sizes(constexprs: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
-    """Output tile (BM, BN) from constexprs like BLOCK_SIZE_M / BLOCK_M / BLOCK_N."""
+def _tile_sizes(constexprs: Dict[str, Any]) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Tile (BM, BN, BK) from constexprs like BLOCK_SIZE_M / BLOCK_M / BLOCK_N / BLOCK_K."""
     def find(dim: str) -> Optional[int]:
         for k, v in constexprs.items():
             if "BLOCK" in k.upper() and k.upper().rstrip("_").endswith(dim) and isinstance(v, int):
                 return v
         return None
-    return find("M"), find("N")
+    return find("M"), find("N"), find("K")
 
 
 def analyze(code: str, problem_id: str, hardware_id: str, smem_per_sm_kb: float) -> Tuple[Optional[str], Dict[str, Any]]:
@@ -223,7 +223,7 @@ def analyze(code: str, problem_id: str, hardware_id: str, smem_per_sm_kb: float)
         "atomics": mix["atomics"],
         "ptx_instructions": mix["instructions"],
     }
-    metrics["tile_m"], metrics["tile_n"] = _tile_sizes(entry.constexprs)
+    metrics["tile_m"], metrics["tile_n"], metrics["tile_k"] = _tile_sizes(entry.constexprs)
     if blocks == 0:
         return (f"cannot launch on sm_{capability}: {shared_bytes} B shared / {usage['REG']} regs x "
                 f"{num_warps} warps exceed per-SM limits"), metrics

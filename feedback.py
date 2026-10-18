@@ -72,6 +72,45 @@ def _syntax_parts(check_error: str, code: str):
     return msg, source or rest
 
 
+def _gate_lesson(check_error: str) -> Optional[str]:
+    """The rule for a rejection by the sanitizer, the B200 evaluator or the CPU check, if it was one."""
+    if check_error.startswith("sanitizer: "):
+        return ("Rejected by the anti-gaming sanitizer: " + check_error[len("sanitizer: "):][:220] + ". Compute the "
+                "operator in your own @triton.jit kernel and launch it; the host wrapper may only allocate, reshape and "
+                "launch, and must not import os/sys or modify torch or triton.")
+    if check_error.startswith("B200 evaluator: "):
+        detail = check_error[len("B200 evaluator: "):]
+        if "Shared memory" in detail:
+            return f"Too much shared memory ({detail}). Use fewer num_stages or smaller BLOCK sizes."
+        if "TMEM" in detail:
+            return f"The accumulator does not fit in TMEM ({detail}). Keep BLOCK_N x accumulator buffers <= 512."
+        if "tolerance" in detail:
+            return f"Narrower operands fail this problem's tolerance ({detail}). Keep fp16/bf16 inputs to tl.dot."
+        return f"Rejected by the B200 evaluator: {detail[:200]}. BLOCK_K must be a multiple of the tensor-core K."
+    if not check_error.startswith("cpu check: "):
+        return None
+    detail = check_error[len("cpu check: "):]
+    if detail.startswith(("stale", "wrong after the inputs changed")):
+        return ("The output did not follow the inputs when their values changed (a cached result, or a launch that "
+                "stopped running). Compute the result from the inputs on every call.")
+    if detail.startswith("monkeypatching"):
+        return f"Do not modify torch or triton: {detail[:160]}."
+    if "CUDA" in detail:
+        return ("Allocate outputs and scratch memory on the inputs' device (device=x.device), not a hardcoded 'cuda': "
+                "every candidate is also run on the CPU.")
+    if "NaN" in detail:
+        return ("Part of the output was never written (it read back as NaN). Make the grid and the store masks "
+                "cover every output element.")
+    if detail.startswith(("wrong on", "raised on")):
+        return (f"The kernel failed on another input shape ({detail[:170]}). Use the inputs' real strides and mask "
+                "the edges; do not assume contiguous inputs or sizes that are multiples of the block size.")
+    if detail.startswith("wrong"):
+        return f"The kernel computed the wrong result on small inputs checked on the CPU ({detail[6:170]})."
+    if detail.startswith("timed out"):
+        return "The kernel did not finish within the CPU check's time limit; avoid unbounded or data-dependent loops."
+    return f"The kernel failed the CPU correctness check: {detail[:180]}."
+
+
 def lessons_from_failure(check_error: Optional[str], agent_error: Optional[str], code: str = "") -> List[str]:
     """Rules derived from one failed candidate (or a failed agent call)."""
     lessons: List[str] = []
@@ -86,6 +125,9 @@ def lessons_from_failure(check_error: Optional[str], agent_error: Optional[str],
         return lessons
     if not check_error:
         return lessons
+    gate_lesson = _gate_lesson(check_error)
+    if gate_lesson:
+        return [gate_lesson]
 
     m = MISSING_ATTR_RE.search(check_error)
     if m:

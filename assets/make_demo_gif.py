@@ -6,7 +6,7 @@ for one candidate; five candidates are drawn side by side so each check can be f
 page: the Python syntax check, the GPU-less Triton compile, the anti-gaming sanitizer, the model +
 analytical heuristic evaluator, and every Nth generation a real GPU run (torch reference, then
 timing). The best becomes the next parent, and what the checks found becomes instructions for the
-next prompt. What docs/PLAN.md plans but is not built yet is drawn in purple.
+next prompt. What mini-kerngen adds is drawn in purple.
 
     python assets/make_demo_gif.py
 """
@@ -23,8 +23,8 @@ ACCENT = (37, 99, 235)
 OK = (22, 142, 86)
 BAD = (200, 60, 50)
 GOLD = (196, 142, 20)
-PLANNED = (124, 58, 237)  # in docs/PLAN.md, not built yet
-PLANNED_BG = (244, 240, 254)
+NEW = (124, 58, 237)  # what mini-kerngen adds
+NEW_BG = (244, 240, 254)
 CARD = (255, 255, 255)
 
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
@@ -42,13 +42,13 @@ F_TITLE, F_H, F_H2, F_B, F_S = font(26, True), font(16, True), font(14, True), f
 F_RULE, F_MONO, F_KEY, F_VAL = font(14), font(12, mono=True), font(17, True), font(15)
 
 AGENT, SYNTAX, COMPILE, SANITIZE, EVALUATE, TIMED = range(6)
-# Pipeline rows, top to bottom: (y center, title lines, subtitle lines, planned)
+# Pipeline rows, top to bottom: (y center, title lines, subtitle lines, new in mini-kerngen)
 ROWS = [
     (222, ["LLM agent"], ["1 call per generation:", "DeepSeek or Nemotron on Crusoe"], False),
     (304, ["1. Syntax"], ["ast.parse"], False),
     (386, ["2. Compile"], ["Triton, no GPU: sm_80 … sm_121"], False),
     (470, ["3. Anti-Gaming Sanitizer"], ["after AKO4X: varying inputs,", "poison cells, library calls"], True),
-    (562, ["4. Model + Analytical", "Heuristic Evaluator"], ["static score today; planned: CPU", "deviation, tcgen05, timed Petri net"], True),
+    (562, ["4. Model + Analytical", "Heuristic Evaluator"], ["static score, CPU deviation,", "tcgen05, timed Petri net"], True),
     (660, ["5. GPU run"], ["every Nth generation:", "correctness, then time"], False),
 ]
 BANDS = [180, 263, 345, 428, 516, 611, 708]  # row boundaries
@@ -90,9 +90,9 @@ def box(d, rect, title, lines, color, fill=CARD, width=2, sub_color=INK):
         d.text((cx, rect[1] + 42 + 15 * i), line, font=F_S, fill=sub_color, anchor="mm")
 
 
-def row_label(d, y, titles, subs, planned):
-    lines = [(t, F_H2 if len(titles) > 1 else F_H, PLANNED if planned else INK, 18) for t in titles]
-    lines += [(s, F_S, PLANNED if planned else MUTED, 15) for s in subs]
+def row_label(d, y, titles, subs, new):
+    lines = [(t, F_H2 if len(titles) > 1 else F_H, NEW if new else INK, 18) for t in titles]
+    lines += [(s, F_S, NEW if new else MUTED, 15) for s in subs]
     top = y - (sum(h for *_, h in lines) + 3) / 2
     for i, (text, f, color, h) in enumerate(lines):
         d.text((32, top), text, font=f, fill=color)
@@ -106,13 +106,13 @@ def base(gen_label, caption, rows=True):
     title_right = d.textbbox((32, 22), "mini-kerngen", font=F_TITLE)[2]
     d.text((title_right + 16, 31), "evolutionary search for Triton kernels", font=F_B, fill=MUTED)
     d.text((W - 32, 31), gen_label, font=F_H, fill=ACCENT, anchor="ra")
-    d.text((W - 32, 54), "purple: planned (docs/PLAN.md)", font=F_S, fill=PLANNED, anchor="ra")
+    d.text((W - 32, 54), "purple: new in mini-kerngen", font=F_S, fill=NEW, anchor="ra")
     if rows:
         d.line([(32, BANDS[0]), (W - 32, BANDS[0])], fill=LINE, width=1)
-        for i, (y, titles, subs, planned) in enumerate(ROWS):
-            if planned:
-                d.rectangle([32, BANDS[i] + 1, W - 32, BANDS[i + 1] - 1], fill=PLANNED_BG)
-            row_label(d, y, titles, subs, planned)
+        for i, (y, titles, subs, new) in enumerate(ROWS):
+            if new:
+                d.rectangle([32, BANDS[i] + 1, W - 32, BANDS[i + 1] - 1], fill=NEW_BG)
+            row_label(d, y, titles, subs, new)
             d.line([(32, BANDS[i + 1]), (W - 32, BANDS[i + 1])], fill=LINE, width=1)
     d.rounded_rectangle([32, 736, W - 32, 788], radius=10, fill=CARD, outline=LINE)
     d.text((W // 2, 762), caption, font=F_B, fill=INK, anchor="mm")
@@ -124,10 +124,10 @@ def prompt_inputs(d, gen, parent_label="parent kernel", parent_color=INK, wiki_a
     box(d, MEMORY_BOX, "Feedback memory",
         ["no rules yet"] if gen == 1 else ["rules and timings from", "earlier generations"], ACCENT)
     if wiki_active:
-        box(d, WIKI_BOX, "KernelWiki", ["symptom: pipeline-stalls", "→ technique-pipeline-stages"], PLANNED,
-            fill=PLANNED_BG, width=3)
+        box(d, WIKI_BOX, "KernelWiki", ["symptom: pipeline-stalls", "→ technique-pipeline-stages"], NEW,
+            fill=NEW_BG, width=3)
     else:
-        box(d, WIKI_BOX, "KernelWiki", ["technique page for the prompt,", "once the search stalls"], PLANNED)
+        box(d, WIKI_BOX, "KernelWiki", ["technique page for the prompt,", "once the search stalls"], NEW)
 
 
 def candidate(d, x, y, idx, state):
@@ -159,11 +159,11 @@ def feedback_frame(gen_label, benched):
     img, d = base(gen_label, "What the checks%s found becomes instructions for the next prompt"
                   % (" and the GPU run" if benched else ""), rows=False)
     if benched:
-        sources = [("draft 2 ✗", "compile error", BAD), ("draft 3 ✗", "gaming: cached result", PLANNED),
-                   ("draft 4 ✗", "SMEM over 227 KB", PLANNED), ("draft 5 ✓", "timed, kept", OK)]
+        sources = [("draft 2 ✗", "compile error", BAD), ("draft 3 ✗", "gaming: cached result", NEW),
+                   ("draft 4 ✗", "SMEM over 227 KB", NEW), ("draft 5 ✓", "timed, kept", OK)]
     else:
-        sources = [("draft 2 ✗", "syntax error", BAD), ("draft 3 ✗", "gaming: torch.matmul", PLANNED),
-                   ("draft 4 ✗", "deviation on CPU", PLANNED), ("draft 1 ✓", "near miss", OK)]
+        sources = [("draft 2 ✗", "syntax error", BAD), ("draft 3 ✗", "gaming: torch.matmul", NEW),
+                   ("draft 4 ✗", "deviation on CPU", NEW), ("draft 1 ✓", "near miss", OK)]
     for i, (head, why, color) in enumerate(sources):
         x = 32 + 210 * i
         d.rounded_rectangle([x, 96, x + 206, 150], radius=8, fill=CARD, outline=color, width=2)
@@ -173,18 +173,18 @@ def feedback_frame(gen_label, benched):
     box(d, [150, 210, 470, 300], "Feedback memory",
         ["local: this run · file: .kerngen_memory.jsonl", "RawTree: across runs · repeats: \"seen N×\""], ACCENT)
     box(d, [500, 210, 820, 300], "KernelWiki",
-        ["symptom → pattern → technique page,", "added once the search stalls"], PLANNED)
+        ["symptom → pattern → technique page,", "added once the search stalls"], NEW)
     arrow(d, (310, 302), (310, 338), ACCENT, 3)
-    arrow(d, (660, 302), (660, 338), PLANNED, 3)
+    arrow(d, (660, 302), (660, 338), NEW, 3)
     d.rounded_rectangle([32, 340, W - 32, 700], radius=10, fill=CARD, outline=LINE)
     d.text((52, 356), "Next prompt: rules and timings" if benched else "Next prompt: rules", font=F_H, fill=INK)
-    rules = ([("Fix the kernel launch (compile error)", INK), ("Don't cache results between calls", PLANNED),
-              ("Shared memory over 227 KB per SM", PLANNED), ("The kernel to beat ran in 1602 µs", INK),
+    rules = ([("Fix the kernel launch (compile error)", INK), ("Don't cache results between calls", NEW),
+              ("Shared memory over 227 KB per SM", NEW), ("The kernel to beat ran in 1602 µs", INK),
               ("These strategies were already timed", INK)] if benched
-             else [("Write Python, not C (no 0.0f)", INK), ("Write the kernel; don't call torch.matmul", PLANNED),
-                   ("Cover the whole output (CPU deviation)", PLANNED), ("Loads are narrow → larger BLOCK", INK),
+             else [("Write Python, not C (no 0.0f)", INK), ("Write the kernel; don't call torch.matmul", NEW),
+                   ("Cover the whole output (CPU deviation)", NEW), ("Loads are narrow → larger BLOCK", INK),
                    ("Scored no higher than the parent", INK)])
-    rules.append(("On a stall: a KernelWiki technique page", PLANNED))
+    rules.append(("On a stall: a KernelWiki technique page", NEW))
     for i, (rule, color) in enumerate(rules):
         d.text((56, 398 + 40 * i), "• " + rule, font=F_RULE, fill=color)
     return img
@@ -197,21 +197,21 @@ def stall_frame():
     prompt_inputs(d, 6, wiki_active=True)
     arrow(d, (142, 160), (142, 456), MUTED)
     arrow(d, (408, 160), (408, 236), ACCENT)
-    arrow(d, (682, 160), (682, 236), PLANNED, 3)
-    d.rounded_rectangle([268, 240, W - 32, 408], radius=10, fill=CARD, outline=PLANNED, width=2)
-    d.text((288, 256), "Prompt block (planned)", font=F_H2, fill=PLANNED)
+    arrow(d, (682, 160), (682, 236), NEW, 3)
+    d.rounded_rectangle([268, 240, W - 32, 408], radius=10, fill=CARD, outline=NEW, width=2)
+    d.text((288, 256), "Prompt block", font=F_H2, fill=NEW)
     block = ["[KERNELWIKI technique-pipeline-stages | source-reported | sm100]",
              "Retrieved because: TMA-bound, bubble ratio 0.41 at 2 stages",
              "Idea: keep more tile buffers in flight so loads overlap MMAs",
              "In Triton: num_stages=4, tl.range(..., warp_specialize=True)"]
     for i, line in enumerate(block):
         d.text((288, 290 + 28 * i), line, font=F_MONO, fill=INK)
-    arrow(d, (568, 410), (568, 456), PLANNED, 3)
+    arrow(d, (568, 410), (568, 456), NEW, 3)
     d.rounded_rectangle([92, 458, W - 92, 516], radius=10, fill=CARD, outline=ACCENT, width=2)
     d.text((W // 2, 487), "LLM agent: one call, told to explore this technique", font=F_H2, fill=ACCENT, anchor="mm")
-    d.rounded_rectangle([92, 556, W - 92, 664], radius=10, fill=PLANNED_BG, outline=PLANNED, width=2)
-    d.text((112, 568), "Stagnation counter (planned)", font=F_H2, fill=PLANNED)
-    d.text((112, 600), "0–2 generations without a new elite → exploit: sweep launch constants, no LLM",
+    d.rounded_rectangle([92, 556, W - 92, 664], radius=10, fill=NEW_BG, outline=NEW, width=2)
+    d.text((112, 568), "Stagnation counter", font=F_H2, fill=NEW)
+    d.text((112, 600), "0–2 generations without a new elite → mutate, guided by the feedback rules",
            font=F_RULE, fill=INK)
     d.text((112, 630), "3 or more → explore: one LLM call carrying a KernelWiki technique page", font=F_RULE, fill=INK)
     return img
@@ -232,15 +232,15 @@ def frames():
         prompt_inputs(d, gen)
         arrow(d, (142, 160), (142, 188), MUTED)
         arrow(d, (408, 160), (408, 188), ACCENT, 3 if gen > 1 else 2)
-        dashed_arrow(d, 682, 160, 188, PLANNED)
+        dashed_arrow(d, 682, 160, 188, NEW)
         for i, x in enumerate(LANE_X):
             candidate(d, x, ROWS[AGENT][0], i, "new")
         out.append((img, 1500))
 
         captions = {SYNTAX: "1. Python syntax check drops unparseable code",
                     COMPILE: "2. Ahead-of-time Triton compile drops made-up tl.* APIs and type errors",
-                    SANITIZE: "3. Anti-gaming sanitizer (planned): library calls, cached results, monkeypatching",
-                    EVALUATE: "4. Evaluator: static score; planned: CPU deviation, tcgen05, Petri-net timing"}
+                    SANITIZE: "3. Anti-gaming sanitizer: library calls, cached results, monkeypatching",
+                    EVALUATE: "4. Evaluator: static score, CPU deviation, tcgen05 format check, Petri-net timing"}
         for stage in (SYNTAX, COMPILE, SANITIZE, EVALUATE):
             img, d = base(g, captions[stage])
             prompt_inputs(d, gen)
@@ -289,13 +289,13 @@ def frames():
              ("Model", "Deepseek-V4-Flash or NVIDIA Nemotron on Crusoe; one call per generation", False),
              ("Checks", "Python syntax → Triton compile (sm_80 … sm_121) → launch limits", False),
              ("Sanitizer", "after AKO4X: varying inputs, poison cells, library-call ban", True),
-             ("Evaluator", "static score today; CPU deviation, tcgen05 numerics, Petri net", True),
+             ("Evaluator", "static score, CPU deviation, tcgen05 numerics, Petri net (uncalibrated)", True),
              ("KernelWiki", "symptom-matched technique pages once the search stalls", True),
              ("GPU run", "--gpu-bench-every N: torch reference, extra shapes, then do_bench", False),
              ("Feedback", "findings and timings → next prompt; memory: run, file or RawTree", False),
              ("Output", "lineage JSON + submission script for the best kernel", False)]
-    for i, (k, v, planned) in enumerate(lines):
-        d.text((56, 120 + 62 * i), k, font=F_KEY, fill=PLANNED if planned else ACCENT)
+    for i, (k, v, new) in enumerate(lines):
+        d.text((56, 120 + 62 * i), k, font=F_KEY, fill=NEW if new else ACCENT)
         d.text((214, 121 + 62 * i), v, font=F_VAL, fill=INK)
     out.append((img, 3000))
     return out
